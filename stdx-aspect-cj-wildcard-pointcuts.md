@@ -1,10 +1,10 @@
-# stdx.aspect_cj 切点通配符与切点参数实参设计
+# stdx.aspectCJ 切点通配符与切点参数实参设计
 
 关联 Issue（需求来源）：[Cangjie/UsersForum#2248](https://atomgit.com/Cangjie/UsersForum/issues/2248)
 
 # 1、特性需求/问题/动机的来源与价值
 
-`stdx.aspect_cj` 当前按包名、类名、函数名和函数类型做精确匹配；切面函数若要接收切点参数，形参必须与每个目标函数逐项一致。因此，同一类横切逻辑需要重复声明多条注解或多个切面函数，无法方便地覆盖一组命名或签名相近的函数。
+`stdx.aspectCJ` 当前按包名、类名、函数名和函数类型做精确匹配；切面函数若要接收切点参数，形参必须与每个目标函数逐项一致。因此，同一类横切逻辑需要重复声明多条注解或多个切面函数，无法方便地覆盖一组命名或签名相近的函数。
 
 本特性提供两项能力：
 
@@ -28,7 +28,7 @@ flowchart LR
 ```
 
 - 影响仓库：`Cangjie/cangjie_stdx` 与对应测试仓。
-- 影响模块：`src/stdx/aspect_cj`、`collect_aspects`、`weave_aspects`；不改变编译器公开命令行接口。
+- 影响模块：`src/stdx/aspectCJ`、`collect_aspects`、`weave_aspects`；不改变编译器公开命令行接口。
 - 环境依赖：实现位于 CHIR 插件层，原则上不绑定具体 OS；首批 DT 以 Linux x86_64 cjnative 为准，其他已支持 target 复用同一 CHIR 逻辑。
 - API/ABI：不修改三个注解类的构造参数；旧的精确配置继续可用。`.annoinfo` 是构建中间产物，新写入格式增加版本头和参数模式位；读取端兼容无版本头的旧格式，对未知版本明确报错。
 - 外部感知：仅使用通配符或 `Array<Any>` 模式的用户感知新行为。
@@ -36,7 +36,7 @@ flowchart LR
 
 # 3、业界竞品分析（可选）
 
-AspectJ 的 pointcut 支持名称模式和参数模式，是本需求的主要使用体验参考。本方案不直接引入完整 pointcut 表达式语言，只扩展现有字符串字段，保持仓颉 `aspect_cj` 当前注解模型和实现边界，降低兼容与解析复杂度。注解切点以及规则 AND/OR/NOT 组合不纳入本次默认范围。
+AspectJ 的 pointcut 支持名称模式和参数模式，是本需求的主要使用体验参考。本方案不直接引入完整 pointcut 表达式语言，只扩展现有字符串字段，保持仓颉 `aspectCJ` 当前注解模型和实现边界，降低兼容与解析复杂度。注解切点以及规则 AND/OR/NOT 组合不纳入本次默认范围。
 
 # 4、本特性的设计/实现方案
 
@@ -122,6 +122,8 @@ sequenceDiagram
 | `function_type_wildcard_configuration` | 同上 | 用 `(**,std.core.String)->*` 匹配一参和二参函数 | 两个目标均命中 |
 | `wildcard_qualified_type_and_pointcut_args` | 同上 | 用 `p.**.service`、`Order*`、`handle*`、`(**,p.*.a.**.*DAO)->*` 匹配成员函数 | 一参、二参目标均命中，数组排除隐式 `this` |
 | `insertAtEntry_with_pointcut_args_array` | 同上 | 目标传入 Int64、String、Bool | 数组长度、顺序、值和动态类型正确 |
+| `insertAtExit_with_pointcut_args_array` | 同上 | Exit 切面接收 Int64、String 实参快照 | 目标先执行，Exit 数组长度、顺序、值和动态类型正确 |
+| `pointcut_args_array_empty` | 同上 | 零参数目标使用 `Array<Any>` 模式 | Entry 收到长度为 0 的数组，目标正常执行 |
 | `invalid_function_type_wildcard` | 同上 | 配置两个参数 `**` | 收集阶段拒绝并输出指定诊断 |
 | `wildcard_function_type_requires_args_array` | 同上 | 通配签名切面不声明 `Array<Any>` | 收集阶段拒绝 |
 | 旧 Insert/Exit/Replace 回归 | 同上 | 运行原有入口、出口、替换用例 | 输出与变更前一致 |
