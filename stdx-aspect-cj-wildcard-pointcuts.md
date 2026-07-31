@@ -1,0 +1,151 @@
+# stdx.aspect_cj 切点通配符与切点参数实参设计
+
+关联 Issue（需求来源）：[Cangjie/UsersForum#2248](https://atomgit.com/Cangjie/UsersForum/issues/2248)
+
+# 1、特性需求/问题/动机的来源与价值
+
+`stdx.aspect_cj` 当前按包名、类名、函数名和函数类型做精确匹配；切面函数若要接收切点参数，形参必须与每个目标函数逐项一致。因此，同一类横切逻辑需要重复声明多条注解或多个切面函数，无法方便地覆盖一组命名或签名相近的函数。
+
+本特性提供两项能力：
+
+1. 切点配置支持确定性的通配符匹配：名称段内 `*` 匹配零个或多个字符；包名及函数类型限定类型名中的整段 `**` 匹配零个或多个名称段；函数类型中的独立 `*` 匹配一个类型，参数列表中的独立 `**` 匹配零个或多个参数。
+2. `InsertAtEntry`、`InsertAtExit` 切面函数可声明一个 `Array<Any>` 参数，运行时获得目标函数全部显式实参的只读值快照，从而用同一个切面覆盖不同参数列表的目标函数。
+
+实现前，开发者需要为 `handleOrder(OrderDAO)` 和 `handlePriorityOrder(Int64, OrderDAO)` 分别声明切面；实现后可用 `packageName: "p.**.service"`、`className: "Order*"`、`methodName: "handle*"`、`funcTypeStr: "(**,p.*.a.**.*DAO)->*"` 和一个 `Array<Any>` 切面同时匹配二者。
+
+# 2、特性影响分析
+
+```mermaid
+flowchart LR
+    A["用户源码与 AOP 注解"] --> B["CollectAspects 插件"]
+    B --> C["版本化 .annoinfo 元数据"]
+    C --> D["WeaveAspects 插件"]
+    D --> E["名称/签名通配匹配器"]
+    D --> F["Array&lt;Any&gt; CHIR 构造"]
+    E --> G["织入后的 CHIR"]
+    F --> G
+    G --> H["Cangjie 后端与运行时"]
+```
+
+- 影响仓库：`Cangjie/cangjie_stdx` 与对应测试仓。
+- 影响模块：`src/stdx/aspect_cj`、`collect_aspects`、`weave_aspects`；不改变编译器公开命令行接口。
+- 环境依赖：实现位于 CHIR 插件层，原则上不绑定具体 OS；首批 DT 以 Linux x86_64 cjnative 为准，其他已支持 target 复用同一 CHIR 逻辑。
+- API/ABI：不修改三个注解类的构造参数；旧的精确配置继续可用。`.annoinfo` 是构建中间产物，新写入格式增加版本头和参数模式位；读取端兼容无版本头的旧格式，对未知版本明确报错。
+- 外部感知：仅使用通配符或 `Array<Any>` 模式的用户感知新行为。
+- 性能：单名称匹配的时间复杂度为 `O(P×N)`，包名和函数参数序列匹配分别为 `O(S×T)`；空间使用滚动数组，为目标序列长度的 `O(N)`。不使用递归回溯，避免指数级最坏情况。
+
+# 3、业界竞品分析（可选）
+
+AspectJ 的 pointcut 支持名称模式和参数模式，是本需求的主要使用体验参考。本方案不直接引入完整 pointcut 表达式语言，只扩展现有字符串字段，保持仓颉 `aspect_cj` 当前注解模型和实现边界，降低兼容与解析复杂度。注解切点以及规则 AND/OR/NOT 组合不纳入本次默认范围。
+
+# 4、本特性的设计/实现方案
+
+## 4.1 总体流程
+
+```mermaid
+sequenceDiagram
+    participant U as "用户源码"
+    participant C as "CollectAspects"
+    participant M as ".annoinfo v2"
+    participant W as "WeaveAspects"
+    participant R as "目标函数 CHIR"
+    U->>C: "解析 AOP 注解并校验模式"
+    C->>M: "写入切面信息、通配规则和参数模式"
+    W->>M: "读取 v2；兼容读取 v1"
+    W->>W: "匹配包/类/函数/函数类型"
+    alt "Array<Any> 参数模式"
+        W->>R: "按显式参数顺序 Box 并构造 Array<Any>"
+    end
+    W->>R: "在 Entry/Exit 插入切面调用"
+```
+
+## 4.2 通配符语义
+
+| 配置位置 | 语法 | 语义 |
+|---|---|---|
+| 包名、类名、函数名的名称段 | `*` | 同一段内匹配零个或多个字符，不跨 `.` |
+| 包名完整段 | `**` | 匹配零个或多个包名段 |
+| 函数参数或返回类型 | 独立 `*` | 匹配一个任意类型 |
+| 函数参数列表 | 独立 `**` | 匹配零个或多个参数，初版最多出现一次 |
+| 函数类型中的限定类型名 | 如 `p.*.a.**.*DAO` | 名称段内 `*` 与完整段 `**` 的语义同包名匹配 |
+
+函数类型解析对圆括号、方括号和泛型尖括号做嵌套计数，只有顶层逗号才分隔参数。无通配符配置保持精确匹配；`std.core.T` 与 CHIR 对内建类型使用的简写 `T` 视为等价。
+
+## 4.3 `Array<Any>` 实参模式
+
+- 仅当 Insert 切面函数有且仅有一个显式 `Array<Any>` 参数时启用。
+- 数组元素按目标函数源码显式形参顺序生成；实例方法隐式 `this` 不进入数组。
+- 每个值通过 CHIR `Box` 转为 `Any`，写入 `RawArray<Any>`，再调用 `Array<Any>` 的底层构造函数。
+- `InsertAtEntry` 与 `InsertAtExit` 都支持该模式。Exit 复用入口处构造的快照，保证值语义一致。
+- 初版为只读值快照：修改数组元素不会回写目标函数参数。
+- 实例切面原有的 `this` 传递规则保持不变。
+- `ReplaceFuncBody` 继续使用最后一个“原函数闭包”参数，不在本次增加 `Array<Any>` 模式，等待 Team 在本 Proposal PR 中确认。
+
+通配函数类型只允许与 `Array<Any>` 参数模式组合，避免一个切面函数的静态形参无法适配多个目标签名。
+
+## 4.4 元数据发现与兼容
+
+元数据文件使用“切面来源包 + 目标索引”命名，避免多个切面包写入同一文件。精确包名以目标包作为索引；包含包名通配符的规则使用固定哨兵索引 `__aspect_cj_wildcard__`。织入阶段发现当前目录内的 AOP 元数据，解析后再执行实际包名匹配。
+
+新格式首行写入 `#aspect_cj_annoinfo_v2`，每条 Insert 记录增加 `usesPointcutArgsArray`。读取逻辑：
+
+1. v2：按新字段读取；
+2. 无版本头：按 v1 读取，并将新字段默认为 `false`；
+3. 未知版本或损坏记录：输出明确诊断并停止使用该文件。
+
+## 4.5 方案选择
+
+- 选择动态规划 glob，而非正则表达式：无需引入转义规则和额外依赖，复杂度确定。
+- 选择版本化文本元数据，而非直接替换为新序列化协议：变更小、可兼容已有构建中间产物。
+- 选择 `Array<Any>` 快照，而非参数回写：Entry/Exit 语义一致，不引入拆箱失败、数组长度不一致和部分写回问题。
+
+# 5、DFX 分析
+
+- 可诊断性：收集阶段拒绝非法包名模式、格式错误的函数类型、多个参数 `**`，以及未采用 `Array<Any>` 的通配签名切面。
+- 可维护性：名称、包名、函数类型匹配集中在独立匹配器；元数据版本常量集中定义。
+- 可观测性：未知元数据版本、文件损坏和 CHIR 必需定义缺失均输出带文件或函数名的错误。
+- 性能与容量：滚动数组限制临时空间；通配元数据读取后应在单次插件运行内复用解析结果。
+
+# 6、可信分析
+
+- Security/Privacy：不新增外部 I/O 或数据上报；`Array<Any>` 仅包含当前调用已有参数。
+- Reliability：确定性匹配算法、元数据版本校验和负例诊断降低静默误织入风险。
+- Resilience：兼容 v1 元数据；未知版本采用显式失败而非按错误字段继续织入。
+- Availability：精确匹配旧路径保留，不使用新能力的项目行为不变。
+- Safety：通配符可能扩大织入范围，收集阶段语法约束和 DT 覆盖用于控制风险。
+
+# 7、关键 DT 用例简述
+
+| 测试用例名称 | 预置条件 | 用例关键步骤 | 预期结果 |
+|---|---|---|---|
+| `wildcard_pointcut_configuration` | Linux cjnative，加载两个 AOP 插件 | 使用 `def*`、`*`、`print*` 匹配两个函数 | 两个函数入口均执行切面 |
+| `function_type_wildcard_configuration` | 同上 | 用 `(**,std.core.String)->*` 匹配一参和二参函数 | 两个目标均命中 |
+| `wildcard_qualified_type_and_pointcut_args` | 同上 | 用 `p.**.service`、`Order*`、`handle*`、`(**,p.*.a.**.*DAO)->*` 匹配成员函数 | 一参、二参目标均命中，数组排除隐式 `this` |
+| `insertAtEntry_with_pointcut_args_array` | 同上 | 目标传入 Int64、String、Bool | 数组长度、顺序、值和动态类型正确 |
+| `invalid_function_type_wildcard` | 同上 | 配置两个参数 `**` | 收集阶段拒绝并输出指定诊断 |
+| `wildcard_function_type_requires_args_array` | 同上 | 通配签名切面不声明 `Array<Any>` | 收集阶段拒绝 |
+| 旧 Insert/Exit/Replace 回归 | 同上 | 运行原有入口、出口、替换用例 | 输出与变更前一致 |
+| v1 元数据兼容 | 构造旧格式 `.annoinfo` | 使用新 Weave 插件读取 | 按精确规则正常织入 |
+| 未知/损坏元数据 | 构造未知头或缺字段记录 | 编译目标包 | 输出诊断，不静默误织入 |
+
+# 8、结论
+
+当前为评审草案，待 Team 在本 Proposal PR 中确认以下事项后更新结论：
+
+1. `*`/`**` 语义与参数列表最多一个 `**` 的约束；
+2. `Array<Any>` 排除隐式 `this` 且采用不回写的快照语义；
+3. `Array<Any>` 初版覆盖 Entry/Exit，Replace 延后；
+4. 注解切点、AND/OR/NOT 组合拆分为后续 Proposal。
+
+评审结论：待评审。
+遗留问题责任人：提案作者与对应 Team；闭环时间随 Proposal PR 评审意见确定。
+
+# 附录
+
+## 一、可测试性设计
+
+正向用例覆盖名称、包名、函数类型通配与不同数量/类型参数装箱；负向用例覆盖语法约束和静态参数模式约束；回归用例覆盖原有 Entry、Exit、Replace；元数据用例覆盖 v1、v2、未知版本和损坏记录。
+
+## 二、评审范围
+
+本特性改变编译期 AOP 收集/织入流程并影响外部开发者配置语义，建议按功能实现评审或 Team 指定的架构评审方式执行。
