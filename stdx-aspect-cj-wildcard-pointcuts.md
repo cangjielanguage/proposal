@@ -79,6 +79,7 @@ sequenceDiagram
 - `InsertAtEntry` 与 `InsertAtExit` 都支持该模式。Exit 复用入口处构造的快照，保证值语义一致。
 - 初版为只读值快照：修改数组元素不会回写目标函数参数。
 - 实例切面原有的 `this` 传递规则保持不变。
+- 实例成员切面函数的 `this` 类型静态确定，因此其 `packageName`、`className` 仍须精确配置。全局/静态切面可以使用接收者通配符；若以类型化形参接收目标实例的 `this`，仍须通过原有的精确类型校验。`Array<Any>` 模式不包含 `this`。
 - `ReplaceFuncBody` 继续使用最后一个“原函数闭包”参数，不在本次增加 `Array<Any>` 模式，等待 Team 在本 Proposal PR 中确认。
 
 通配函数类型只允许与 `Array<Any>` 参数模式组合，避免一个切面函数的静态形参无法适配多个目标签名。
@@ -101,7 +102,7 @@ sequenceDiagram
 
 # 5、DFX 分析
 
-- 可诊断性：收集阶段拒绝非法包名模式、格式错误的函数类型、多个参数 `**`，以及未采用 `Array<Any>` 的通配签名切面。
+- 可诊断性：收集阶段拒绝非法包名模式、格式错误的函数类型、多个参数 `**`、未采用 `Array<Any>` 的通配签名切面，以及接收者类型不安全的实例切面通配配置。
 - 可维护性：名称、包名、函数类型匹配集中在独立匹配器；元数据版本常量集中定义。
 - 可观测性：未知元数据版本、文件损坏和 CHIR 必需定义缺失均输出带文件或函数名的错误。
 - 性能与容量：滚动数组限制临时空间；通配元数据读取后应在单次插件运行内复用解析结果。
@@ -126,6 +127,7 @@ sequenceDiagram
 | `pointcut_args_array_empty` | 同上 | 零参数目标使用 `Array<Any>` 模式 | Entry 收到长度为 0 的数组，目标正常执行 |
 | `invalid_function_type_wildcard` | 同上 | 配置两个参数 `**` | 收集阶段拒绝并输出指定诊断 |
 | `wildcard_function_type_requires_args_array` | 同上 | 通配签名切面不声明 `Array<Any>` | 收集阶段拒绝 |
+| `instance_advice_receiver_wildcard` | 同上 | 实例成员切面用通配包名或类名扩大 `this` 类型范围 | 收集阶段拒绝并提示改用全局/静态切面 |
 | 旧 Insert/Exit/Replace 回归 | 同上 | 运行原有入口、出口、替换用例 | 输出与变更前一致 |
 | v1 元数据兼容 | 构造旧格式 `.annoinfo` | 使用新 Weave 插件读取 | 按精确规则正常织入 |
 | 未知/损坏元数据 | 构造未知头或缺字段记录 | 编译目标包 | 输出诊断，不静默误织入 |
