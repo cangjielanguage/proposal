@@ -6,6 +6,8 @@
 
 `stdx.aspectCJ` 当前按包名、类名、函数名和函数类型做精确匹配；切面函数若要接收切点参数，形参必须与每个目标函数逐项一致。因此，同一类横切逻辑需要重复声明多条注解或多个切面函数，无法方便地覆盖一组命名或签名相近的函数。
 
+需求讨论进一步明确了一个使用约束：织入过程应当对切点函数开发者无感知，不要求目标函数或目标类型额外添加 AOP 专用宏、标记注解、代理包装或胶水代码。本方案因此继续增强现有 `stdx.aspectCJ` 编译器插件，在切面侧完成配置和声明，在 CHIR 阶段完成匹配与织入，目标业务源码保持不变。
+
 本特性提供两项能力：
 
 1. 切点配置支持确定性的通配符匹配：名称段内 `*` 匹配零个或多个字符；包名及函数类型限定类型名中的整段 `**` 匹配零个或多个名称段；函数类型中的独立 `*` 匹配一个类型，参数列表中的独立 `**` 匹配零个或多个参数。
@@ -38,6 +40,20 @@ flowchart LR
 
 AspectJ 的 pointcut 支持名称模式和参数模式，是本需求的主要使用体验参考。本方案不直接引入完整 pointcut 表达式语言，只扩展现有字符串字段，保持仓颉 `aspectCJ` 当前注解模型和实现边界，降低兼容与解析复杂度。注解切点以及规则 AND/OR/NOT 组合不纳入本次默认范围。
 
+需求讨论给出的 [`Cangjie-SIG/fountain/f_aspect`](https://gitcode.com/Cangjie-SIG/fountain/tree/master/f_aspect) 参考实现采用宏改写与运行时路由：目标函数经 `Pointcut`/`WeavedBean` 宏包装后，以 `Array<Any>` 调用切面链，能够提供参数替换、around、throwing/final、注解规则和 AND/OR/NOT 等更完整的 AOP 生命周期。该实现可作为参数模式和规则能力的语义参考，但要求切点源码参与宏改写，且引入反射、路由缓存和运行时依赖，不满足本需求讨论提出的“切点开发者无感知”约束。因此本方案不复制其宏架构，而是在现有 CHIR 插件内独立实现活动任务明确列出的通配匹配与实参传递能力；其余能力待独立设计和评审。
+
+## 3.1 需求范围对照
+
+| 需求来源 | 能力 | 本 Proposal 处理方式 |
+|---|---|---|
+| 活动高级任务标题、Issue 第 1 项 | 包名、类名、函数名及函数类型通配配置 | 本次设计并实现 |
+| 活动高级任务标题、Issue 第 2 项 | 切面通过 `Array<Any>` 使用切点函数实参 | 本次设计并实现；初版为不回写的浅快照 |
+| Issue 第 3 项 | 注解切点 | 保留既有业务注解，不要求新增 AOP 标记；按独立特性后续设计 |
+| Issue 第 4 项 | 规则与切面分离、AND/OR/NOT | 参考 `f_aspect` 的规则语义，按独立特性后续设计 |
+| Issue 价值描述 | 从切面修改目标函数实参 | 涉及类型安全、拆箱失败和部分写回，待 Team 确认后另行设计 |
+
+上述拆分不否定 Issue 后三项需求；目的是使本次活动题目明确列出的两项能力先形成可兼容、可验收的最小闭环，并由 Team 确认后续特性的 Proposal 边界。
+
 # 4、本特性的设计/实现方案
 
 ## 4.1 总体流程
@@ -58,6 +74,13 @@ sequenceDiagram
     end
     W->>R: "在 Entry/Exit 插入切面调用"
 ```
+
+无感知织入边界如下：
+
+- 目标函数和目标类型不要求新增 AOP 专用宏、标记注解、代理接口或包装函数；原有源码可直接作为切点。
+- 切面开发者仅在现有 `InsertAtEntry`/`InsertAtExit` 注解配置中使用通配符，并可选择 `Array<Any>` 参数模式。
+- 匹配、实参装箱和调用插入全部由 Collect/Weave 插件在编译期完成，不新增运行时路由或服务定位依赖。
+- 未使用新语法的旧精确配置保持原行为，已有目标源码不需要迁移。
 
 ## 4.2 通配符语义
 
@@ -101,6 +124,7 @@ sequenceDiagram
 - 选择动态规划 glob，而非正则表达式：无需引入转义规则和额外依赖，复杂度确定。
 - 选择版本化文本元数据，而非直接替换为新序列化协议：变更小、可兼容已有构建中间产物。
 - 选择 `Array<Any>` 快照，而非参数回写：Entry/Exit 语义一致，不引入拆箱失败、数组长度不一致和部分写回问题。
+- 选择增强现有 CHIR 插件，而非宏改写或运行时代理：目标源码无需添加切点标记或胶水代码，保持织入对切点开发者无感知，并避免新增反射与运行时路由依赖。
 
 # 5、DFX 分析
 
@@ -124,6 +148,7 @@ sequenceDiagram
 | `wildcard_pointcut_configuration` | Linux cjnative，加载两个 AOP 插件 | 使用 `def*`、`*`、`print*` 匹配两个函数 | 两个函数入口均执行切面 |
 | `function_type_wildcard_configuration` | 同上 | 用 `(**,std.core.String)->*` 匹配一参和二参函数 | 两个目标均命中 |
 | `wildcard_qualified_type_and_pointcut_args` | 同上 | 用 `p.**.service`、`Order*`、`handle*`、`(**,p.*.a.**.*DAO)->*` 匹配成员函数 | 一参、二参目标均命中，数组排除隐式 `this` |
+| `wildcard_qualified_type_and_pointcut_args` 的无感知织入路径 | 同上 | 目标类型和目标函数不添加 AOP 专用宏、标记注解或代理包装，仅由切面侧配置规则 | 编译期正常织入，目标业务源码无需修改 |
 | `wildcard_double_star_zero_segment` | 同上 | 用 `p.**.service` 匹配 `p.service` | `**` 正确匹配零个名称段 |
 | `wildcard_qualified_type_and_pointcut_args` 的反匹配路径 | 同上 | 同时配置 `p.*.service` 尝试匹配 `p.shop.a.service` | `*` 不跨名称段，不发生过匹配 |
 | `insertAtEntry_with_pointcut_args_array` | 同上 | 目标传入 Int64、String、Bool | 数组长度、顺序、值和动态类型正确 |
@@ -148,6 +173,7 @@ sequenceDiagram
 2. `Array<Any>` 排除隐式 `this` 且采用不回写的快照语义；
 3. `Array<Any>` 初版覆盖 Entry/Exit，Replace 延后；
 4. 注解切点、AND/OR/NOT 组合拆分为后续 Proposal。
+5. 保持 CHIR 插件无感知织入，目标函数不增加宏、代理或胶水代码。
 
 评审结论：待评审。
 遗留问题责任人：提案作者与对应 Team；闭环时间随 Proposal PR 评审意见确定。
