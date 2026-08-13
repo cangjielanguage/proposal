@@ -78,6 +78,7 @@ sequenceDiagram
 - 每个值通过 CHIR `Box` 转为 `Any`，写入 `RawArray<Any>`，再调用 `Array<Any>` 的底层构造函数。
 - `InsertAtEntry` 与 `InsertAtExit` 都支持该模式。Exit 复用入口处构造的 `Array<Any>`，其语义是“入口时刻的参数值/引用浅快照”：值类型元素保留入口值，引用类型元素保留入口时指向对象的引用，不复制对象状态。
 - 因此，目标函数执行期间若修改引用对象的内容，Exit 通过该引用看到修改后的对象；若目标函数仅把自己的形参重新绑定到另一对象，Exit 仍持有入口时的原对象引用。
+- 初版 `InsertAtExit` 保持现有语义，仅在目标函数正常退出路径执行；异常抛出/传播路径不在本特性范围内。
 - 初版为只读参数快照：修改数组元素不会回写目标函数参数，也不承诺保存引用对象的入口状态。
 - 实例切面原有的 `this` 传递规则保持不变。
 - 实例成员切面函数的 `this` 类型静态确定，因此其 `packageName`、`className` 仍须精确配置。全局/静态切面可以使用接收者通配符；若以类型化形参接收目标实例的 `this`，仍须通过原有的精确类型校验。`Array<Any>` 模式不包含 `this`。
@@ -123,9 +124,14 @@ sequenceDiagram
 | `wildcard_pointcut_configuration` | Linux cjnative，加载两个 AOP 插件 | 使用 `def*`、`*`、`print*` 匹配两个函数 | 两个函数入口均执行切面 |
 | `function_type_wildcard_configuration` | 同上 | 用 `(**,std.core.String)->*` 匹配一参和二参函数 | 两个目标均命中 |
 | `wildcard_qualified_type_and_pointcut_args` | 同上 | 用 `p.**.service`、`Order*`、`handle*`、`(**,p.*.a.**.*DAO)->*` 匹配成员函数 | 一参、二参目标均命中，数组排除隐式 `this` |
+| `wildcard_double_star_zero_segment` | 同上 | 用 `p.**.service` 匹配 `p.service` | `**` 正确匹配零个名称段 |
+| `wildcard_qualified_type_and_pointcut_args` 的反匹配路径 | 同上 | 同时配置 `p.*.service` 尝试匹配 `p.shop.a.service` | `*` 不跨名称段，不发生过匹配 |
 | `insertAtEntry_with_pointcut_args_array` | 同上 | 目标传入 Int64、String、Bool | 数组长度、顺序、值和动态类型正确 |
 | `insertAtExit_with_pointcut_args_array` | 同上 | Exit 切面接收 Int64、String 实参快照 | 目标先执行，Exit 数组长度、顺序、值和动态类型正确 |
 | `insertAtExit_with_mutated_reference_arg` | 同上 | 目标函数修改引用类型实参的对象内容，Exit 再读取入口时保存的引用 | Exit 看到修改后的对象内容，验证参数数组采用引用浅快照而非对象深快照 |
+| `pointcut_args_array_no_writeback` | 同上 | Entry 切面修改收到的数组元素后调用目标函数 | 目标函数仍收到原实参，数组修改不回写 |
+| `insertAtExit_multiple_normal_returns` | 同上 | 分别走目标函数的两个正常返回分支 | 两条正常退出路径均执行一次 Exit 切面 |
+| `exact_higher_order_function_type` | 同上 | 使用旧式精确高阶函数签名 `((Int64)->Unit)->Unit` | 配置合法并正确织入，箭头不被误判为泛型结束符 |
 | `pointcut_args_array_empty` | 同上 | 零参数目标使用 `Array<Any>` 模式 | Entry 收到长度为 0 的数组，目标正常执行 |
 | `invalid_function_type_wildcard` | 同上 | 配置两个参数 `**` | 收集阶段拒绝并输出指定诊断 |
 | `wildcard_function_type_requires_args_array` | 同上 | 通配签名切面不声明 `Array<Any>` | 收集阶段拒绝 |
