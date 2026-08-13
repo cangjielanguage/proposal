@@ -27,8 +27,8 @@ flowchart LR
     G --> H["Cangjie 后端与运行时"]
 ```
 
-- 影响仓库：`Cangjie/cangjie_stdx` 与对应测试仓。
-- 影响模块：`src/stdx/aspectCJ`、`collect_aspects`、`weave_aspects`；不改变编译器公开命令行接口。
+- 影响仓库：`Cangjie/cangjie_stdx` 与 `Cangjie/cangjie_test`。
+- 影响模块：`cangjie_stdx/src/stdx/aspect_cj/aspect_cj.cj`、`cangjie_stdx/src/stdx/aspect_cj/plugins/collect_aspects/collect_aspects.cj`、`cangjie_stdx/src/stdx/aspect_cj/plugins/weave_aspects/weave_aspects.cj`，以及 `cangjie_test/testsuites/LLT/compiler/Plugins/AOP_tests/linux` 下的 AOP 用例；不改变编译器公开命令行接口。
 - 环境依赖：实现位于 CHIR 插件层，原则上不绑定具体 OS；首批 DT 以 Linux x86_64 cjnative 为准，其他已支持 target 复用同一 CHIR 逻辑。
 - API/ABI：不修改三个注解类的构造参数；旧的精确配置继续可用。`.annoinfo` 是构建中间产物，新写入格式增加版本头和参数模式位；读取端兼容无版本头的旧格式，对未知版本明确报错。
 - 外部感知：仅使用通配符或 `Array<Any>` 模式的用户感知新行为。
@@ -76,8 +76,9 @@ sequenceDiagram
 - 仅当 Insert 切面函数有且仅有一个显式 `Array<Any>` 参数时启用。
 - 数组元素按目标函数源码显式形参顺序生成；实例方法隐式 `this` 不进入数组。
 - 每个值通过 CHIR `Box` 转为 `Any`，写入 `RawArray<Any>`，再调用 `Array<Any>` 的底层构造函数。
-- `InsertAtEntry` 与 `InsertAtExit` 都支持该模式。Exit 复用入口处构造的快照，保证值语义一致。
-- 初版为只读值快照：修改数组元素不会回写目标函数参数。
+- `InsertAtEntry` 与 `InsertAtExit` 都支持该模式。Exit 复用入口处构造的 `Array<Any>`，其语义是“入口时刻的参数值/引用浅快照”：值类型元素保留入口值，引用类型元素保留入口时指向对象的引用，不复制对象状态。
+- 因此，目标函数执行期间若修改引用对象的内容，Exit 通过该引用看到修改后的对象；若目标函数仅把自己的形参重新绑定到另一对象，Exit 仍持有入口时的原对象引用。
+- 初版为只读参数快照：修改数组元素不会回写目标函数参数，也不承诺保存引用对象的入口状态。
 - 实例切面原有的 `this` 传递规则保持不变。
 - 实例成员切面函数的 `this` 类型静态确定，因此其 `packageName`、`className` 仍须精确配置。全局/静态切面可以使用接收者通配符；若以类型化形参接收目标实例的 `this`，仍须通过原有的精确类型校验。`Array<Any>` 模式不包含 `this`。
 - `ReplaceFuncBody` 继续使用最后一个“原函数闭包”参数，不在本次增加 `Array<Any>` 模式，等待 Team 在本 Proposal PR 中确认。
@@ -124,6 +125,7 @@ sequenceDiagram
 | `wildcard_qualified_type_and_pointcut_args` | 同上 | 用 `p.**.service`、`Order*`、`handle*`、`(**,p.*.a.**.*DAO)->*` 匹配成员函数 | 一参、二参目标均命中，数组排除隐式 `this` |
 | `insertAtEntry_with_pointcut_args_array` | 同上 | 目标传入 Int64、String、Bool | 数组长度、顺序、值和动态类型正确 |
 | `insertAtExit_with_pointcut_args_array` | 同上 | Exit 切面接收 Int64、String 实参快照 | 目标先执行，Exit 数组长度、顺序、值和动态类型正确 |
+| `insertAtExit_with_mutated_reference_arg` | 同上 | 目标函数修改引用类型实参的对象内容，Exit 再读取入口时保存的引用 | Exit 看到修改后的对象内容，验证参数数组采用引用浅快照而非对象深快照 |
 | `pointcut_args_array_empty` | 同上 | 零参数目标使用 `Array<Any>` 模式 | Entry 收到长度为 0 的数组，目标正常执行 |
 | `invalid_function_type_wildcard` | 同上 | 配置两个参数 `**` | 收集阶段拒绝并输出指定诊断 |
 | `wildcard_function_type_requires_args_array` | 同上 | 通配签名切面不声明 `Array<Any>` | 收集阶段拒绝 |
