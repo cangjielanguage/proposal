@@ -34,7 +34,7 @@
 | --- | --- | --- |
 | 社区开发者 / CJEEP Author | / | 提交 UsersForum Issue；按要求编写和修订 CJEEP；回应评审；关联 prototype 和实现 |
 | Team Leader | | 在 Issue 中判断范围和所属 Team；负责 Draft PR 初审；检查模板、兼容性和可行性；进行 Team reviewer |
-| PMC System Designer | JunpengZha | 跨 Team 分流；维护流程和模板；安排并主持 Architecture Review；发布 Decision；以 Proposal Repository Committer 身份合入或归档 Proposal |
+| PMC System Designer | ZhaJunpeng | 跨 Team 分流；维护流程和模板；安排并主持 Architecture Review；发布 Decision；以 Proposal Repository Committer 身份合入或归档 Proposal |
 | Architecture Team | 仓颉架构会议评审人 | 正式评审 CJEEP；形成接受、附条件接受、退修或拒绝结论；记录理由 |
 | Implementer / 相关仓库 Committer | / | 提交实现 Issue/PR、上CCB/RAT排迭代、上实现评审完成实现方案讨论、代码检视、测试和文档；更新实现状态 |
 | QA、Test 和 Release Team | / | 完成测试、版本准入、发布和 release notes（遵循仓颉开发流程，本次 CJEEP 不重点体现） |
