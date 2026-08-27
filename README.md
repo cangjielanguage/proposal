@@ -33,8 +33,8 @@
 | **角色** | **责任人** | **主要职责** |
 | --- | --- | --- |
 | 社区开发者 / CJEEP Author | / | 提交 UsersForum Issue；按要求编写和修订 CJEEP；回应评审；关联 prototype 和实现 |
-| Team Leader | 各Team SE | 在 Issue 中判断范围和所属 Team；负责 Draft PR 初审；检查模板、兼容性和可行性；进行 Team reviewer |
-| PMC System Designer | 版本SE（查君鹏） | 跨 Team 分流；维护流程和模板；安排并主持 Architecture Review；发布 Decision；以 Proposal Repository Committer 身份合入或归档 Proposal |
+| Team Leader | | 在 Issue 中判断范围和所属 Team；负责 Draft PR 初审；检查模板、兼容性和可行性；进行 Team reviewer |
+| PMC System Designer | ZhaJunpeng | 跨 Team 分流；维护流程和模板；安排并主持 Architecture Review；发布 Decision；以 Proposal Repository Committer 身份合入或归档 Proposal |
 | Architecture Team | 仓颉架构会议评审人 | 正式评审 CJEEP；形成接受、附条件接受、退修或拒绝结论；记录理由 |
 | Implementer / 相关仓库 Committer | / | 提交实现 Issue/PR、上CCB/RAT排迭代、上实现评审完成实现方案讨论、代码检视、测试和文档；更新实现状态 |
 | QA、Test 和 Release Team | / | 完成测试、版本准入、发布和 release notes（遵循仓颉开发流程，本次 CJEEP 不重点体现） |
@@ -116,7 +116,7 @@ Cangjie/proposal/
 │   ├── team_interop/           # 归档互操作相关的提案
 │   ├── team_macro/             # 归档宏相关的提案
 │   ├── team_spec/              # 归档语言规范相关的提案
-|   |---- team_ai_infra/
+|   |—— team_ai_infra/
 │   ├── security/               # 归档安全相关的提案
 │   └── community/              # 归档社区管理相关的提案 
 ├── decisions/                   # 记录“架构会议”上的关键评审结论
@@ -255,10 +255,6 @@ Proposal 链接
 ```
 
 注意：Cangjie Team 内的架构会议评审纪要不在此归档，还是走 WeMeeting 管理。
-
-## 8.3、遗留问题闭环
-
-遗留问题统一由 PMC System Designer 录入 Cangjie/proposal 仓的 Issue 模块。针对 Cangjie/proposal 仓的 issue，团队统计 issue 闭环情况时只统计 PMC System Designer 提的 issue。
 
 # 9、开发和发布
 
