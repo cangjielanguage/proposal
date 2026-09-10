@@ -1,0 +1,109 @@
+【兼容性影响评审】异常信息整改对 ABI 兼容性及应用行为的影响
+
+- CJEEP ID：CJEEP-0003
+- Author(s)：虞嘉豪
+- Status：Reviewing
+- Implementation：
+  - https://gitcode.com/Cangjie/cangjie_runtime/pull/1636
+  - https://gitcode.com/Cangjie/cangjie_stdx/pull/770
+
+# 1. 评审背景与范围
+
+本次评审涉及以下两个异常信息整改 PR：
+
+| 模块 | PR | 已发现影响应用判断的文本变化 |
+| ---- | ---- | ---- |
+| std | [cangjie_runtime #1636](https://gitcode.com/Cangjie/cangjie_runtime/pull/1636) | `Socket is already closed` → `Socket is already closed.` |
+| stdx | [cangjie_stdx #770](https://gitcode.com/Cangjie/cangjie_stdx/pull/770) | `closed` → `SSL is closed.` |
+
+《异常信息规范提案》评审时，对兼容性影响的结论是：异常信息属于字符串内容，整改不破坏 API 兼容性和 ABI 兼容性。
+
+该结论遗漏了开发者对异常信息内容的依赖，不能作为“本次整改不影响已有应用”的依据。开发者可能判断异常信息是否等于（`==` / equals）或包含（contains）某个字符串，然后执行针对性的处理。即使异常类型、接口签名和调用方式不变，文本变化仍可能使条件判断结果改变，进而改变应用行为。
+
+# 2. 对 API、ABI 及行为兼容性的影响
+
+| 评审维度 | 分析 |
+| ---- | ---- |
+| API 源码兼容性 | 改动仅涉及异常字符串，未改变公开声明 => 兼容 |
+| ABI 结构兼容性 | 单纯修改字符串内容并改变符号、调用约定、类型布局 => 兼容 |
+| 应用行为兼容性 | 已确认存在不兼容影响：依赖旧异常文本的分支判断失效，导致日志级别和重试决策变化。 |
+
+> 部分异常信息修改涉及@Frozen函数，已排查异常信息的插值字符串：
+>
+> - 新增使用当前函数作用域的局部变量，如 `n`、`value.len`
+> - 新增使用当前 class/struct 的成员变量，如 `Array` 中的 `this.len`，符号非最近版本新增
+> - 新增使用当前函数已使用的外部符号，如 `UInt32.Max`
+> - 未新增使用其他外部符号
+>
+> 当：
+>
+> - 旧二进制链接新SDK的动态库：旧二进制内联的是旧版本的@Frozen函数体，不受当前异常信息修改的影响，也不受益
+> - 用户代码使用新SDK重新编译新二进制：旧二进制内联的是新版本的@Frozen函数体，如果用户代码依赖异常信息内容，则需要适配修改
+
+# 3. 对当前ROM、SDK和应用的影响
+
+| 项 | 是否有影响 | 备注 |
+| ---- | ---- | ---- |
+| SDK | 是 | 可能影响依赖旧异常文本进行判断的应用行为 |
+| ROM | 是 | 可能影响依赖旧异常文本进行判断的应用行为 |
+| 美团 | 否 | 未发现使用异常信息做判断的场景 |
+| 携程 | 否 | 未发现使用异常信息做判断的场景 |
+| metaDSL | 否 | 存在使用异常信息做判断的地方，本次整改不会影响程序行为。 |
+| taibai | 是 | 本次整改影响两处程序行为：std 影响日志级别；stdx 影响连接关闭后的重试决策。 |
+
+## 3.1 taibai：std 整改使日志从 info 级别变为 error 级别
+
+应用通过精确匹配异常信息识别 Socket 已关闭的场景。以下为排查提供的代码片段，省略号表示省略的业务代码。
+
+```swift
+try {
+    ...
+} catch (e: Exception) {
+    if (e.message == "Socket is already closed") {
+        LamLog.info { ... }
+    } else {
+        LamLog.error { ... }
+        LamLog.debugExceptionStackTrace(e)
+    }
+}
+```
+
+| 项目 | 整改前 | 整改后 |
+| ---- | ---- | ---- |
+| 异常信息 | `Socket is already closed` | `Socket is already closed.` |
+| 精确匹配结果 | `true` | `false` |
+| 执行分支 | `LamLog.info` | `LamLog.error`，并调用 `LamLog.debugExceptionStackTrace(e)` |
+
+仅在异常信息末尾增加英文句号，就会使原先按 info 级别记录的场景改走 error 分支。这是已识别的程序行为变化；是否进一步触发告警或增加运维负担，取决于应用的日志和告警配置。
+
+## 3.2 taibai：stdx 整改使连接关闭后从“重试”变为“不重试”
+
+应用同时判断异常类型和异常信息，以决定是否重试。
+
+```swift
+if ((err is TlsException) && err.message == "closed") {
+    ...
+    return true // 重试
+}
+return false // 不重试
+```
+
+| 项目 | 整改前 | 整改后 |
+| ---- | ---- | ---- |
+| 异常类型 | `TlsException` | `TlsException` |
+| 异常信息 | `closed` | `SSL is closed.` |
+| 条件判断结果 | `true` | `false` |
+| 返回值及行为 | `true`，重试 | `false`，不重试 |
+
+异常类型判断仍然成立，但文本判断失效，导致连接关闭后不再进入原有重试分支。这直接改变应用的错误恢复行为，不能仅作为报错可读性改善处理。对请求成功率或业务可用性的实际影响，还需结合调用链和回归测试确认。
+
+# 4. 对 SDK、ROM 及发布版本的影响
+
+DFX新需求，仅影响main分支（Cangjie 105.1/BS 7.1）
+
+| 分支 | 版本      | 备注       |
+| ---- | --------- | ---------- |
+| main | STS 1.3.X | 匹配BS 7.1 |
+
+
+# 5. 结论
