@@ -1,5 +1,10 @@
 # stdx.aspect_cj 切点通配符与切点参数实参设计
 
+* CJEEP ID：CJEEP-0002
+* Author(s)：ShenZi
+* Status：Reviewing
+* Implementation：UnImplemented
+
 关联 Issue（需求来源）：[Cangjie/UsersForum#2248](https://atomgit.com/Cangjie/UsersForum/issues/2248)
 
 # 1、特性需求/问题/动机的来源与价值
