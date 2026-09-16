@@ -16,7 +16,7 @@ xxx
 
 ### 1.1.1 目标
 
-为绕开上述系统命令行长度限制,本特性**仅为 `cjc` 提供一种"从文件读取命令行参数"的入口**:用户把过长的参数写入一个文本文件(下文称 rsp 文件),`cjc` 读取该文件内容、按既定规则切分为参数 token、展开到命令行对应位置,等价于把这些参数直接写在命令行上。
+为绕开上述系统命令行长度限制,本特性为 `cjc` 提供一种"从文件读取命令行参数"的入口。大型工程中,rsp 通常由构建系统根据已有参数数组自动生成,而不是要求用户手写；`cjc` 读取该文件内容、按既定规则切分为参数 token。
 
 **术语**:该文件即业界通称的 **response file(响应文件)**,常取扩展名 `.rsp`(故简称 rsp 文件)——一份纯文本参数清单,由工具自己读取并展开,以绕开 shell/OS 的命令行长度限制。MSVC `link.exe @link.rsp`、GCC/Clang、GNU ld、lld 的 `@file` 都是同一机制。
 
@@ -24,14 +24,10 @@ xxx
 
 | 术语 | 一句话解释 |
 | --- | --- |
-| `argv` | 程序启动后拿到的**参数数组**(`argv[0]` 是程序名自身)。长度限制限制的是原始字符串;参数切得对不对,取决于用什么规则把字符串切分成 argv |
-| `CreateProcessA` | Windows 创建子进程的系统 API。它只接收**一整条命令行字符串**(上限 32767 字符),切分参数不是它的职责 |
-| **CRT** | C 运行时库(C Runtime Library)。Windows 上程序被启动后,由程序内的 CRT 启动代码把那**一整条字符串**切分成 argv——这套切分规则即后文所说的"CRT 规则 / CRT 风格 / CRT 套",也是 `CommandLineToArgvW` 的规则。MSVC `link.exe`、CMake/Ninja 生成的 rsp、Windows 上的 ld.lld 全部遵循它,它是 Windows 用户"反斜杠路径不转义"习惯的来源(详见 §4.3.3 开头) |
-| `CommandLineToArgvW` | Windows 官方提供的"命令行字符串 → argv"转换 API,与 CRT 规则同源;微软官方文档对规则逐条成文(§4.3.3 引用) |
-| GNU 风格 | GCC / GNU ld / Linux 与 macOS 上的 lld 通用的 rsp 解析习惯:`'`/`"` 都是引号,引号内外 `\X` 一律转义(吃 `\`) |
+
+| **CRT** | C 运行时库(C Runtime Library)。Windows 上程序被启动后,由程序内的 CRT 启动代码把那**一整条字符串**切分成 argv——这套切分规则即后文所说的"CRT 规则 / CRT 风格 / CRT 套",也是 `CommandLineToArgvW` 的规则。MSVC `link.exe`、CMake/Ninja 生成的 rsp、Windows 上的 ld.lld 全部遵循它,它是 Windows 用户"反斜杠路径不转义"习惯的来源(详见附录 A0.3) |
 | CRT 风格 | 上文 CRT 规则的引号/反斜杠行为:仅 `"` 是引号;`\` 仅在紧贴 `"` 时特殊(2n 配对),其余位置一律普通字符 |
 | bash 风格 | bash shell 的引号/转义语义(不含变量/命令展开):无引号 `\X`→X、单引号内全字面、双引号内仅 5 种转义、`#` 注释、行尾 `\` 续行 |
-| MinGW | Windows 上的一套 GNU 工具链环境。cjc 在 Windows 上使用的链接器 `ld.lld.exe` 以 MinGW 驱动模式运行,解析 rsp 与命令行均遵循 CRT 风格 |
 
 https://gcc.gnu.org/wiki/Response_Files 
 
@@ -39,7 +35,8 @@ https://gcc.gnu.org/wiki/Response_Files
 
 ## 1.2 适用场景
 - Windows 命令行长度上限 32767 字符,进程可能启动失败;
-- 用户工程依赖、库目录、源文件较多,命令行参数过长不便阅读与复用;
+- 大型工程中源文件、依赖库、链接输入或编译选项数量过多,由构建系统/driver 自动生成 rsp;
+- 用户手写 rsp 仅作为调试、复现和小规模配置的辅助场景,不是本特性的主要目标;
 
 ## 1.3 实现前 vs 实现后对比
 
@@ -50,12 +47,12 @@ https://gcc.gnu.org/wiki/Response_Files
 cjc -L"third party/lib" -lfoo -lbar -lbaz -g -O0 src/main.cj
 ```
 
-**实现后**:用户侧可以写 rsp 文件沉淀配置启动。
+**实现后**:构建系统或上游 driver 根据参数数组自动生成 rsp,再启动 cjc。
 
 ```bash
-# 用户侧:配置沉淀到文件
-cjc @build/options.rsp
-cjc -O0 @build/common.rsp -O2 src/main.cj   # 与命令行混用
+# 构建系统生成 compile.rsp 后启动 cjc
+cjc @build/compile.rsp
+cjc -O0 @build/common.rsp -O2 src/main.cj   # 仍可与普通参数混用
 ```
 
 # **2、特性影响分析**
@@ -68,13 +65,7 @@ cjc -O0 @build/common.rsp -O2 src/main.cj   # 与命令行混用
 
 # **3、业界竞品分析**
 
-## 3.1 用户视角:业界使用方式
-
-- **GCC/Clang**:`gcc @args.txt main.c`,args.txt 内每行一个参数,支持引号与 `\` 转义;**不支持 `#` 注释**(`#` 行的 token 会被当成参数/输入文件`)。
-- **GNU ld / lld / lld-link**:`ld @link.rsp`,语法与 GCC `@file` 基本一致(lld 为兼容 GNU ld 而设计)。
-- **MSVC `link.exe`**:`link @link.rsp`,语法为 Windows 风格(每行一个 arg,空格分隔的 arg 不需引号)。
-
-**官方文档索引**:
+## 3.1 主要实现
 
 | 工具 | 用户手册 | 语法真正定义处(源码) |
 | --- | --- | --- |
@@ -82,430 +73,311 @@ cjc -O0 @build/common.rsp -O2 src/main.cj   # 与命令行混用
 | GNU ld | <https://sourceware.org/binutils/docs/ld/Options.html> | binutils `ld/`(与 libiberty 同源) |
 | clang / lld | 无专门手册页 | `llvm/lib/Support/CommandLine.cpp`(`ExpansionContext::expandResponseFiles`)+ `lld/Common/Args.cpp` |
 | MSVC `link.exe` | <https://learn.microsoft.com/en-us/cpp/build/reference/at-specify-a-linker-response-file> | 闭源,以文档为准 |
+| Rust `rustc` | [`@path` 参数文件](https://doc.rust-lang.org/rustc/command-line-arguments.html#path-load-command-line-flags-from-a-path) | [`rustc_driver_impl/src/args.rs`](https://github.com/rust-lang/rust/blob/master/compiler/rustc_driver_impl/src/args.rs)；稳定化 Issue [#63576](https://github.com/rust-lang/rust/issues/63576) / Commit [446a43d](https://github.com/rust-lang/rust/commit/446a43da0ee23b3a69e214f030d6d7dada345296) |
+| Rust Cargo | 无独立用户格式文档；构建时自动兜底 | [`cargo-util/process_builder.rs`](https://github.com/rust-lang/cargo/blob/master/crates/cargo-util/src/process_builder.rs) 的 `retry_with_argfile` |
+| Swift Driver | [Swift Driver 仓库](https://github.com/swiftlang/swift-driver)；`swiftc` 用户手册未单独定义统一 rsp 语法 | [`Driver.swift`](https://github.com/swiftlang/swift-driver/blob/main/Sources/SwiftDriver/Driver/Driver.swift)、[`ArgsResolver.swift`](https://github.com/swiftlang/swift-driver/blob/main/Sources/SwiftDriver/Execution/ArgsResolver.swift)；演进提交见 [response-file 初始支持](https://github.com/swiftlang/swift-driver/commit/b86325a9)、[Windows 支持](https://github.com/swiftlang/swift-driver/commit/402b22a9) |
+| Go `cmd/go`/`cmd/compile` | 无稳定的 `go build @file` 用户文档；主要通过 Issue/CL 演进 | 初始支持 [Issue #18468](https://github.com/golang/go/issues/18468)/[CL 110395](https://go-review.googlesource.com/c/go/+/110395)；转义补丁 [Issue #42295](https://github.com/golang/go/issues/42295)/[CL 272870](https://go-review.googlesource.com/c/go/+/272870)；GCC 兼容 [Issue #77177](https://github.com/golang/go/issues/77177)/[CL 737500](https://go-review.googlesource.com/c/go/+/737500) |
+| CMake / Ninja | [Ninja `rspfile` 文档](https://ninja-build.org/manual.html)；CMake 平台模块中的 `CMAKE_<LANG>_USE_RESPONSE_FILE_FOR_*` 配置 | CMake 生成规则，Ninja 在执行前写入并在成功后删除 `rspfile` |
+具体字符行为及实验数据见附录 B。
+
+## 3.2 生成者、消费者与触发方式
+
+命令行长度限制发生在父进程创建子进程时，因此**持有完整参数数组的父进程负责生成 rsp，接收参数的子进程负责定义 rsp 格式**。不能要求尚未启动的子进程为自己生成 rsp。
+
+| 调用链 | rsp 生成者 | rsp 消费者 | 典型触发方式 |
+| --- | --- | --- | --- |
+| Cargo → rustc/rustdoc | Cargo | rustc/rustdoc | Cargo 先按普通 argv 启动；遇到“命令行过长”错误后，将参数逐行写入临时 `cargo-argfile.*`，以 `@file` 重试，执行后清理 |
+| Swift Driver → swift-frontend/clang/linker | 待补充 | 待补充| 待补充 |
+| Go `go` → compile/link | `go` 构建驱动或相应工具链组件 | compile/link/外部链接器 | Go 没有面向 `go build` 用户的统一 `@file` 协议；具体参数文件属于内部工具链机制,不能直接作为 cjc 的格式先例 |
+| CMake + Ninja → compiler/linker | CMake 生成构建规则；**执行时由 Ninja 写入 rsp** | compiler/linker | CMake按编译器/平台能力产生 `rspfile`、`rspfile_content` 规则；Ninja 在执行命令前写文件，成功后删除 |
 
 
-## 3.2 设计者视角:实现方案
 
-| 工具 | rsp 解析器 | `\` 转义 | 行续接 | `#` 注释 | 嵌套 `@file` |
-| --- | --- | --- | --- | --- | --- |
-| GCC | `libiberty` 的 `expandargv` | 支持(单/双引号内都认) | 换行符转义进 token(token 跨行,`\n` 保留,非 bash 式拼接) | **不支持**(实测:`#` 行被当输入文件) | 支持 |
-| GNU ld / lld | `lld/Common/Args.cpp` / binutils | 支持(单/双引号内都认) | 同 GCC(换行转义进 token) | **不支持**(实测 GNU ld:`cannot find #`;lld 的 `TokenizeGNUCommandLine` 亦无注释逻辑) | 支持 |
-| MSVC link | 自带 | 不支持 | 不支持 | 不支持 | 不支持 |
+## 3.3 四类格式及其设计动机
+
+业界主流实现可归纳为以下四类。本文所称“GNU 格式”和“GCC 格式”通常指同一来源：GCC、GNU ld 等 binutils 工具通过 libiberty 的 `buildargv`/`expandargv` 解析 rsp，因此统一记为 **GNU/GCC（libiberty）格式**。不过，libiberty 的规则会随版本演进；LLVM 的 “GNU tokenizer” 是兼容实现，也不保证与任意版本的 libiberty 在所有边界行为上完全一致。
+
+| 格式 | 主要使用者 | 核心规则 | 设计动机与指导思想 |
+| --- | --- | --- | --- |
+| MSVC/CRT | `link.exe`、`cl.exe`、`lld-link`、`clang-cl`、Windows Swift 工具链 | 空白分隔；仅双引号分组；反斜杠只在紧邻 `"` 时使用 2n/2n+1 规则，不支持 shell 变量、glob、注释和续行。 | 镜像 Windows 命令行和 CRT 的 `argv` 语义，受既有生态兼容约束 |
+| GNU/GCC（libiberty） | GCC、GNU ld、`ar` 等 binutils 工具；Go 1.27 开始向其兼容 | 空白分隔；单双引号分组；反斜杠转义；不执行变量、命令和 glob 展开；引号内转义和换行行为以具体 libiberty 版本为准 | 接近 shell 的参数引用子集，兼顾手写和工具生成，已形成 Unix 工具链事实标准 |
+| LLVM GNU 兼容变体 | 非 CL 模式的 Clang、lld、Linux/macOS Swift Driver | 使用 LLVM GNU tokenizer，兼容 GNU/GCC 的常用写法，但单双引号、反斜杠、空参数和续行等边界不保证完全一致；Windows/CL 场景切换 Windows tokenizer | 以共享实现服务多个工具和平台；保证主流 GNU rsp 互操作，同时为 Windows 保留独立规则 |
+| Rust 零语法 | `rustc` 默认 argfile | 一行一个参数；无引号、无转义、无嵌套；UTF-8；参数内换行不可表示 | 写端和读端受控时，以最小语法换取简单、确定的序列化；增强格式通过显式入口增加 |
+
+三种现代工具链的演进重点不同：Rust 保持基础格式稳定，通过显式入口增加 POSIX shell 风格（并非严格 GNU/GCC 兼容）的格式；Go 从私有逐行协议转向 GNU/GCC 兼容格式；Swift 的 tokenizer 基本稳定，主要演进生成时机、能力声明和进程内/进程外执行边界。详细过程见附录 B.3。
+
 
 # **4、本特性的设计/实现方案**
 
-## 4.1 整体流程图
-![alt text](rsp.png)
-
-## 4.2 用户侧:接口与选项定义
-设计原则:
-
-- **不引入新的语法**:rsp 文件格式尽量贴近用户在命令行输入的既有习惯,不为 rsp 文件单独发明一套新规则;Windows 用户即使不熟悉 bash,只要按"每行一个参数、含空格的用引号包住"的最朴素写法也能正常使用;
-- **Windows 优先**:首要解决 Windows 平台 `CreateProcessA` 32767 字符硬限制导致的启动失败问题;
-
-### 4.2.1 选项定义与功能
+## 4.1 选项定位与设计定位
 
 cjc 提供编译选项 `@<file>`:以 `@` 开头、后跟 rsp 文件路径构成一个命令行参数,如 `@build/options.rsp`,用于在编译时从文件中读取编译参数。cjc 读取 `<file>` 中的参数序列,**就地替换**该 `@<file>` 参数;替换后 cjc 的行为,与用户把这些参数手工写在命令行该位置**完全等价**。
 
-"展开后等价于手写" 用等价变换式表达:
+
+本特性首先解决“大型工程中父进程无法用普通命令行启动 cjc”的问题。
 
 ```text
-命令行写作:    cjc  @compile.rsp  src/main.cj
-rsp 文件内容:  -g -O2 -lfoo              (空白分隔,推荐每行一个参数)
-最终等价于:    cjc  -g  -O2  -lfoo  src/main.cj
+cjpm / Ninja / CMake
+    └─ 根据完整 argv 生成 rsp
+         └─ cjc 读取 rsp 并恢复 argv
+              └─ 进入既有选项解析和编译流程
 ```
 
+因此，rsp 的首要定位是构建系统与 cjc 之间的参数传递协议。
 
-**性质澄清**(避免误解):
+## 4.2 接口与展开流程
 
-- `@<file>` 对用户是一个编译选项,`cjc -h` 帮助信息中需列出其用法;实现上它是**选项解析前的参数替换**(§4.2.3 展开时机),选项解析逻辑不参与展开、不消费展开后的 rsp 参数,因此选项表中没有它的解析条目,帮助文本需单独补充;
-- rsp 文件**不是脚本/配置 DSL**:没有变量、条件、执行语义,全部内容就是一串参数文本,唯一语义是"按 §4.3 的规则切分成参数";
-- "等价"指**参数序列等价**:cjc 不因参数来自文件而改变任何行为;但 rsp 文件自身的问题会独立报错(不存在、不可读、是目录、格式错误,见 §4.4)——`@` 起始参数一律按 rsp 引用,文件不存在直接报错(§4.3.1 决策记录);
-- **不兼容变更(影响面小,评审需知悉)**:本特性引入前,命令行的 `@xx.cj` 会被当作**普通输入文件路径**——若工程里确有以 `@` 开头命名的文件,可以直接编译;引入后 `@` 起始参数**一律按 rsp 引用**处理(不存在即报 `response_file_not_found`,存在且内容合法则被当作 rsp 展开为参数),此类旧用例不再可用。绕行:改写为非 `@` 起始的路径形式 `./@xx.cj`(三方案通用,Win32 接受,见 §4.3.1 决策记录 D3-b 的 `./@t.cj` 项)。源文件以 `@` 命名的场景罕见,评估为可接受的不兼容变更。
-
-### 4.2.2 基本用法
-
-使用分两步:
-
-**第 1 步:把参数写入 rsp 文件**。一个 UTF-8 文本文件,参数之间用空白分隔(推荐每行一个参数),含空格等特殊字符的参数用引号包住。完整格式规范见 §4.3:
+cjc 接受 `@<file>` 参数：
 
 ```text
-# build/options.rsp
--O2
--L"third party/lib"
--lfoo
-src/main.cj
+cjc -O0 @build/compile.rsp -O2
 ```
 
-**第 2 步:在命令行需要这些参数的位置写 `@路径` 引用该文件**。cjc 自动读取并就地展开,此后一切照常:
-
-```bash
-# 全部参数来自 rsp 文件
-cjc @build/options.rsp
-# 等价于手写:cjc -O2 "-Lthird party/lib" -lfoo src/main.cj
-```
-
-`@<file>` 可与命令行普通参数任意混用,也可嵌套引用其他 rsp 文件:
-
-```bash
-# 混用:rsp 出现的位置即展开位置,前后参数顺序不变
-cjc -O0 @build/common.rsp -O2 src/main.cj
-
-# 嵌套:rsp 文件内部可再写 @child.rsp(相对路径基准为父 rsp 所在目录)
-cjc @debug.rsp src/main.cj
-```
-
-
-
-
-## 4.3 用户侧:配置文件参数格式与解析规则
-
-用户侧规则现有四个候选方案,差异集中在"无引号 `\` 如何处理"、"是否分平台"与"分隔模型"三点。**当前倾向:方案一**(理由见 §4.3.5 对比)。优缺点速览与同一个例子的四种写法见 §4.3.0,再进入各方案细则。
-
-**公共机制集中在方案一介绍**(§4.3.1):其中编码、CRLF （windows 换行符）处理、嵌套路径基准、循环/深度限制、文件内容校验和错误模型等属于各方案共享的文件级机制；引号、反斜杠、注释、续行等词法规则由各方案/平台套单独定义。方案二、方案三的小节只写与方案一的词法差异点,避免三处重复。
-
-### 4.3.0 方案导览:优缺点速览与一个例子
-
-| 方案 | 优点 | 缺点 |
-| --- | --- | --- |
-| 一:全平台一套,无引号字面化——**当前倾向**(§4.3.1) | 一套规则三平台通用;仅改一条规则(无引号 `\` 一律字面)即解决 Windows 路径直写,引号/注释/续行等其余机制不变,迁移成本最小 | 双引号内行尾 `\` 需双写(`"C:\Users\test\test2\\"`);字面 `@file.cj` 需写 `"\@file.cj"` |
-| 二:全平台一套,bash 基准(§4.3.2) | 功能最全(转义/注释/续行),与 GCC 习惯一致;现行实现零改动 | Windows 路径裸写必坏——`C:\Users\x` 解析成 `C:Usersx`,每条路径都须包引号,忘了即静默错解析(找错文件/找不到文件) |
-| 三:两套机制,Windows=CRT、POSIX=bash(§4.3.3) | 每平台都是原生规则(Windows 有微软官方文档背书),单平台习惯最纯正、零新语法 | Windows 套须放弃 `#` 注释;引号未闭合静默吞到 EOF,几乎没有格式报错;字面 `@x.cj` 文件无法表达(仅 `./@x.cj` 绕行) |
-| 四:一行一参,极简(§4.3.4) | 规则最少——一行一个参数、行内全字面,心智负担最低 | 与业界"空白分隔"rsp 不兼容;无 `#` 注释;`@` 起始参数、续行不可表达;零字符空行即空参数(排版空行须至少留一个空格);引号字符会写进参数值,表达力差 |
-
-**一个例子,四种写法**:假设 `cjc` 需要收到以下参数,特意覆盖行尾 `\` 路径、含空格路径、带引号宏、字面 `@` 文件、空参数五类难点:
+rsp 在选项解析前就地展开，展开后的参数顺序与直接写在命令行中一致：
 
 ```text
--O2
--LC:\lib\
--L"third party/lib"
--DMSG="a b"    <- cjc 参数中需要输入引号
---link-options="-lfoo -lbar"  <--
-@x.cj          ← 真的叫这个名字的源文件,不是 rsp 引用
-(空参数)
+命令行： cjc -O0 @build/compile.rsp -O2
+rsp：    -Lthird-party/lib
+         src/main.cj
+结果：   cjc -O0 -Lthird-party/lib src/main.cj -O2
 ```
 
-同一意图在四方案下的 rsp 写法:
+通用处理流程如下：
 
-**方案二(现行,bash 基准)**——写法负担最重:
+1. 识别 `@<file>`
+2. 读取文件并按所选格式恢复参数序列；
+3. 在原位置替换 `@<file>`；
+4. 将完整参数数组交给现有选项解析器。
+
+文件不存在、不可读、编码非法或格式错误时，在展开阶段直接报错。具体错误码和嵌套路径规则见附录 A0.6、A0.7。
+
+## 4.3 候选方案与业界格式的关系
+
+第三章的四类格式是业界协议分类，下面的四个方案是 cjc 的候选设计，两者不是一一对应关系。各方案与业界格式的关系如下：
+
+| 候选方案 | MSVC/CRT | GNU/GCC | LLVM GNU 变体 | Rust 零语法 | 定位 |
+| --- | --- | --- | --- | --- | --- |
+| 方案一：LLVM GNU + Windows 裸路径扩展 | 不兼容 | 常用子集兼容 | 除无引号 `\` 外对齐 | 不兼容 | 以 LLVM GNU 为基线，仅将无引号 `\` 改为字面字符，使 Windows 裸路径可直接书写 |
+| 方案二：LLVM GNU | 不兼容 | 常用子集兼容 | 兼容 | 不兼容 | 全平台直接采用 LLVM GNU tokenizer，优先兼容 Clang/lld/Swift 及其上游生成器 |
+| 方案三：Swift/LLVM 分平台规则 | Windows 端兼容 | POSIX 端常用子集兼容 | POSIX 端兼容 | 不兼容 | Windows 使用 LLVM Windows/CRT tokenizer，Linux/macOS 使用 LLVM GNU tokenizer |
+| 方案四：Rust 默认 argfile | 不兼容 | 不兼容 | 不兼容 | 兼容 | 一行一个参数，整行原样作为 payload；不解析引号、转义和嵌套 |
+
+由此可见，现有候选方案中：
+
+- 方案一是 LLVM GNU 的单点扩展，不再是独立设计的一整套 shell 语法；
+- 方案二严格采用 LLVM GNU 格式；
+- 方案三采用 Swift/LLVM 的双 tokenizer 结构；
+- 方案四严格采用 Rust 默认 argfile 格式。
+
+需要注意，LLVM GNU 与 GNU/GCC（libiberty）只有常用写法兼容，不应宣称逐项等价。Ninja 本身只负责写入 `rspfile_content`，上游生成规则仍需明确按 LLVM GNU、Windows CRT 或 Rust 逐行格式编码。
+
+详细字符规则、示例和逐项比较见附录 A0。
+
+## 4.4 方案选择依据
+
+方案选择取决于 rsp 是否属于公开互操作协议。
+
+### 4.4.1 封闭链路：生成端与读取端均由项目控制
+
+如果首版仅服务 `cjpm → cjc`，且两端同步升级，可以采用严格的一行一参格式。建议遵循以下约束：
+
+- 一行对应一个参数，除行终止符外不裁剪内容；
+- 无引号、转义、注释、续行和自动嵌套；
+- UTF-8 编码，兼容 LF/CRLF；
+- 参数内换行和 NUL 不可表示，生成时直接报错；
+- 空参数是否支持需单独决定；若支持，必须明确区分空记录与文件末尾换行；
+- 生成器和读取器以 `decode(encode(argv)) == argv` 为验收标准。
+
+这一路线即方案四（Rust 默认 argfile）。
+
+### 4.4.2 公开链路：需要接收外部构建系统生成的 rsp
+
+如果要求 Ninja、CMake、Bazel 或其他工具直接生成 cjc rsp，应选择明确的生态格式，而不是新增混合规则：
+
+- POSIX/GNU 生态采用 GCC 或 LLVM GNU tokenizer；
+- Windows/MSVC 生态采用 CRT tokenizer；
+- 必须明确具体兼容目标和版本差异，并建立相应兼容测试。
+
+此时方案二可作为 LLVM 生态兼容格式；方案三适合同时覆盖 Windows CRT 和 POSIX LLVM GNU。方案一属于带扩展的 LLVM GNU，必须让生成端知道其无引号反斜杠差异。
+
+### 4.4.3 推荐的演进方向
+
+建议将稳定基础格式与生态兼容格式显式分层，不根据文件内容自动猜测：
 
 ```text
--O2
-'-LC:\lib\'             ← 含 \ 路径必须包引号;裸写会变 -LC:lib,行尾 \ 还会吞下一行
--L"third party/lib"
-"-DMSG=\"a b\""         ← 双引号包 + \" 转义
---link-options="-lfoo -lbar"
-# -g 调试时打开
-\@x.cj                  ← 字面 @ 用无引号转义
-""
+@args.rsp          基础格式
+@llvm:args.rsp     可选：LLVM GNU 兼容格式
+@windows:args.rsp  可选：MSVC/CRT 兼容格式
 ```
 
-**方案一(无引号字面化)**——与方案二唯一差异在无引号 `\`:
+首版只需实现已经确认的基础格式；格式前缀作为扩展空间预留。是否立即实现 `@gcc:` 或 `@windows:`，取决于 cjpm/Ninja/CMake 的接入要求。
 
-```text
--O2
--LC:\lib\               ← 裸写即可(无引号 \ 一律字面,含行尾)
--L"third party/lib"
-"-DMSG=\"a b\""
---link-options="-lfoo -lbar"
-# -g 调试时打开
-"\@x.cj"                ← 字面 @ 用双引号内转义，也能写成 ./@x.cj
-""
-```
+## 4.5 生成策略
 
-**方案三(Windows 套,CRT)**——单平台最纯正,但有缺口:
+格式定义与生成时机相互独立。不同调用链可采用不同策略：
 
-```text
--O2
--LC:\lib\               ← \ 是普通字符,裸写
--L"third party/lib"     ← 仅 " 是引号,' 是普通字符
-"-DMSG=\"a b\""
---link-options="-lfoo -lbar"
-# -g 调试时打开          ← ⚠ 无 # 注释:解析成 #、-g、调试时打开 三个参数
-./@x.cj                 ← ⚠ 无转义:字面 @ 文件只能用 ./@x.cj 绕行
-""
-```
+| 调用链 | 建议策略 |
+| --- | --- |
+| cjpm → cjc | 构建规则式或预判式；cjpm 持有完整 argv，负责写入并清理 rsp |
+| Ninja/CMake → cjc | 由生成器声明 rsp 规则，执行器在启动 cjc 前落盘 |
+| cjc → linker | cjc 根据目标 linker 能力和平台限制预判生成，或捕获命令行过长错误后重试 |
+| 用户直接调用 cjc | 用户可显式提供 `@file`，但不承担自动生成职责 |
 
-**方案四(一行一参,极简)**——规则最少,表达力也最少:
+临时文件应使用唯一名称并避免并发冲突；正常结束后清理，调试或 `save-temps` 模式下可选择保留。
 
-```text
--O2
--LC:\lib\
--Lthird party/lib       ← 含空格参数免引号(整行即参数)
--DMSG="a b"             ← ⚠ 引号进参数(本例恰好可用,但带/去引号的值无法区分)
---link-options=-lfoo -lbar
-# -g 调试时打开              ← ⚠ 无注释:整行成一个参数,编译报错
-./@x.cj                 ← ⚠ 行首 @ 触发展开,字面文件用 ./@x.cj 绕行
-                        ← 空参数:本行什么都不写,直接 \n(即一个空参数)
-```
+## 4.6 分阶段范围
 
-四份文件解析后均应得到最上面那组参数;⚠ 行即各案代价。各写法对应的词法规则见 §4.3.1~§4.3.4;后文按"规则表 + 用例"展开,不再重复本例。
+为避免把读取协议、构建系统集成和链接器兜底混在一个特性中，建议分阶段实施：
 
-### 4.3.1 方案一:全平台一套(无引号字面化,转义只在双引号内)
+1. **cjc 读端**：确定基础格式，实现 `@file` 展开、校验和诊断；
+2. **构建系统写端**：cjpm/Ninja/CMake 集成按阈值或规则自动生成 cjc rsp；
+3. **下游工具写端**：cjc 为 linker/frontend 生成其原生格式的 rsp；
+4. **兼容方言**：仅在存在明确外部互操作需求时增加，并通过显式前缀选择。
 
-**引号外一切字面(Windows 裸路径直写),转义只在 `""` 内开启**。标【变更点】的行即相对现行 bash 规则(方案二)的变更;方案二/三的差异细则见各自小节。
+
+# **5、结论**
+
+## 5.1 评审结论
+
+(待评审后填写:通过 / 不通过 + 达成一致的主要观点。)
+
+## 5.2 遗留问题
+
+
+# **附录 A0:章节4的方案细节**
+
+本附录保留四个候选方案的字符级规则、用例和诊断细节；正文第四章只讨论方案定位与选择依据。
+
+## A0.1 方案一：LLVM GNU + Windows 裸路径扩展
+
+本方案以 LLVM `TokenizeGNUCommandLine` 为基线，仅修改**无引号反斜杠**的处理：LLVM GNU 中无引号 `\X` 会消费反斜杠并保留 `X`；本方案改为原样保留 `\X`。其他空白分隔、单双引号、引号拼接等规则保持 LLVM GNU 语义。
 
 | 元素 | 规则 |
 | --- | --- |
-| 编码 | 按 UTF-8 解码(忽略 UTF-8 BOM);非法 UTF-8 读取即报错并给出行号,提示改用 UTF-8(UTF-16 BOM 转码见 §5.2) |
-| 分隔符 | 任意空白:空格、Tab、`\n`、`\r`、`\f`、`\v`(`\r` 按空白,CRLF 文件天然兼容) |
-| 引号 | `'...'` 内完全字面;`"..."` 内认 `\` 转义(见下);引号本身不入 token |
-| 引号拼接 | 允许 `pre"mid dle"post` 拼成一个 token，`a""b` → `ab`(拼接,不切 token) |
-| 空引号 | `""`/`''` → 一个空参数(不是被丢弃) |
-| 注释 | `#` 在 token 起始触发行注释,至 `\n` 结束;词中 `#` 为字面。字面 `#` 起始参数用引号包裹(`'#flag'`) |
-| **无引号 `\`** | 【变更点】一律字面保留:`C:\Users\test\test2`、`src\main.cj` 原样;`a\ b` → `a\` + `b`,转义空格失效,含空格用引号 |
-| **行尾 `\`** | 【变更点】字面,无续接:`C:\` 行尾直写无忧;续行仅双引号内 `\<newline>` 一种 |
-| 双引号内 `\` 转义 | 转义仅在此开启,`\` 后仅认 6 种序列:`\\`→`\`、`\"`→`"`、`` \` ``→`` ` ``、`\$`→`$`、`\@`→`@`(后三个转义后即普通字面,无变量/展开语义;`\@` 用于字面 `@` 文件名)、`\<newline>` 续接;其余 `\X`(如 `\h`/`\U`)**反斜杠原样保留**,`"C:\Users\test"` 无需双写。故引号内路径含 `\` 须双写:`"C:\lib\\"`→`C:\lib\` |
-| 换行与跨行 | 引号内遇裸 `\n` 一律报 `unterminated_quote`(单/双引号一致);单引号内 `\<newline>` 等于字面 `\` + 裸 `\n`,仍报错 |
-| 字面 `@` | `@` 在 token 起始一律触发嵌套展开(文件不存在即报错,见"文件不存在"行);字面 `@file` 写 `"\@file"`(各方案转义形式见下方决策记录),文件路径亦可用各案通用的 `./@file`——非 `@` 起始即不触发展开 |
-| `$`、`` ` ``、`~`、glob | 普通字符,无变量/命令/glob 展开;双引号内 `\$`→`$`、`` \` ``→`` ` ``(与 bash 双引号一致,命令行参数拷入 rsp 后结果不变) |
-| 嵌套 rsp | `@child.rsp` 相对路径以**父 rsp 所在目录**为基准;绝对路径(盘符/`/` 开头)直接按该路径打开。例见 §4.5 |
-| 循环检测 | 引用链栈按 realpath 规范化路径查重;不同分支可重复引用同一文件;软链成环(b→a→b)按 realpath 检出 |
-| 最大嵌套深度 | 32 层(防恶意/误写导致栈溢出) |
-| 文件不存在 | `@` 起始一律按 rsp 引用,不存在 → 直接报错 `response_file_not_found` |
-| 软链接 | 按平台 `open` 语义跟随;悬空软链视同文件不存在,直接报错;指向目录 → `not_a_file` |
-| 内容校验 | 解码失败(非法 UTF-8)或含 NUL 字节 → `invalid_content` |
-| 不可读/是目录/格式错误 | 直接报错;错误码与报错信息见 §4.4 |
+| 编码与换行 | UTF-8；忽略 UTF-8 BOM；CRLF 按空白处理；非法 UTF-8 或 NUL 报错 |
+| 分隔 | 空格、Tab、LF、CR、FF、VT 等空白切分参数 |
+| 引号 | `'...'`、`"..."` 均用于分组，引号本身不进入参数；允许与无引号片段拼接 |
+| 反斜杠（引号内） | 沿用 LLVM GNU tokenizer 的转义规则 |
+| 反斜杠（无引号） | **扩展点**：一律字面保留，因此 `C:\Users\x` 原样；`a\ b` 被切成 `a\` 和 `b` |
+| 注释、变量、glob | 不支持注释；`#`、`$`、反引号、`~`、glob 均为普通参数字符，不执行展开 |
+| 嵌套 | 是否支持 `@child.rsp` 属于文件级能力，不属于 LLVM GNU tokenizer；若首版面向工具生成，可不支持 |
 
-用例
+该方案能够直接读取大量 LLVM/GNU 常见 rsp，但凡依赖无引号反斜杠转义的输入都会产生不同结果，因此只能称为“LLVM GNU + 扩展”，不能声明严格 LLVM GNU 兼容。
+
+典型差异：
 
 ```text
-# Windows 裸路径(核心收益):引号外 \ 一律字面
-C:\Users\test\test2            → 原样 ✅
-src\main.cj                    → 原样 ✅
--LC:\lib\sub                   → -LC:\lib\sub ✅
-a\nb                           → a\nb(字面)
-C:\\lib                        → C:\\lib(字面双;Win32 容忍)
-a\ b                           → a\ + b 裂开 ⚠(转义空格失效,含空格请用引号)
-\#flag                         → \#flag(字面;要 #flag 用 '#flag' 或 "#flag")
-C:\                            → C:\ ✅(行尾路径直写,无续接陷阱)
---output=\
-build/app                      → --output=\ + build/app 两个参数 ⚠(无引号续行删除)
-"--output=\
-build/app"                     → --output=build/app(续行改用双引号内 \<newline>)
-
-# 双引号内:转义开启(现行语义原样)
-"-DMSG=\"a b\""                → -DMSG="a b"
-"C:\lib\\"                     → C:\lib\(尾部双写减半)
-"C:\Users\test"                → C:\Users\test(\U 非特殊,字面)
-"a\\b"                         → a\b
-
-# 单引号 / 注释 / 其他:全部不变
-'-LC:\Program Files\lib'       → -LC:\Program Files\lib
-'#flag'                        → #flag
-""                             → 空参数
-pre"mid dle"post               → premid dlepost
-'ab'c'                         → 报 unterminated_quote ⚠(单引号顺序配对:第 3 个 ' 重新开启引号,LF 前未闭合;'ab'c'd 同理,'ab'c'd' 则合法得 abcd)
-# 注释行                        → 0 个参数
+输入                    LLVM GNU              方案一
+C:\Users\x              C:Usersx              C:\Users\x
+a\ b                    a b（一个参数）        a\、b（两个参数）
+\#flag                  #flag                  \#flag
 ```
 
-**决策记录(原待定夺)**:`@` 起始、未转义的参数一律按 rsp 引用,文件不存在直接报错、不做"原样保留"兜底(理由与业界对照见 §4.4);字面 `@file` 用转义 `\@` 表达,转义后的 `@` 不触发展开:
+## A0.2 方案二：LLVM GNU
 
-- 方案一:双引号内 `"\@file"`(无引号 `\` 为字面,`\@file` 裸写不转义);
-- 方案二/三 POSIX 套:无引号 `\@file`(现行 bash 语义,已有);
-- 方案三 Windows CRT 套:无转义机制,`@` 起始无法表达;通用绕行:路径形式 `./@t.cj`(各案通用,Win32 接受;CRT 套亦可 `.\@t.cj`)。
+本方案全平台直接采用 LLVM 的 GNU tokenizer，不增加 cjc 私有字符规则。其目标是使 cjc 对 Clang、lld、Linux/macOS Swift Driver 及按 LLVM GNU 规则生成的 rsp 得到相同参数序列。
 
+| 元素 | 规则 |
+| --- | --- |
+| 编码与分隔 | UTF-8；空白分隔；CRLF 兼容 |
+| 引号 | 单引号和双引号均可分组，引号本身不进入参数；支持引号片段拼接 |
+| 反斜杠 | 按 LLVM `TokenizeGNUCommandLine` 处理；无引号 Windows 路径中的反斜杠可能被消费 |
+| 注释 | 不支持；行首 `#` 是普通参数 |
+| 展开 | 不执行变量、命令、波浪号或 glob 展开 |
+| 格式错误 | 由 cjc 在 LLVM tokenizer 结果之外补充文件路径、行号和内容校验诊断 |
 
-### 4.3.2 方案二:全平台一套(bash 为基准的统一规范)
-
-与方案一共用 §4.3.1 的全部公共规则,**唯一差异**是无引号 `\` 通道保持现行 bash 语义——本方案即**现行设计,零改动**;方案三的 macOS/Linux 套亦用这套规则。
-
-**与方案一的差异**(其余规则全部一致,见 §4.3.1):
-
-| 元素 | 方案二(现行 bash 基准) | 方案一 |
-| --- | --- | --- |
-| 无引号 `\X` | →字面 `X`(转义,吃 `\`,可转义空格/`"`/`'`/`#` 等) | 字面保留 `\X`,转义仅在双引号内开启 |
-| 行尾 `\` | `\<newline>` 行续接 | 字面、无续接(续行仅双引号内) |
-| 字面 `#` 起始参数 | `\#flag` | `'#flag'` / `"#flag"` |
-| 字面 `@` 文件名 | `\@report.cj`(转义且不触发展开 *);不带 `\` 的 `@report.cj` 一律按 rsp 引用,不存在时**直接报错** | ✅ 双引号内转义 `"\@report.cj"` |
-
-三通道细则(bash 语义):**无引号** `\X`→字面 `X`(转义,吃 `\`);**单引号**内 `\` 一律字面(不转义);**双引号**内只对 `\\`/`\"`/`` \` ``/`\$`/`\<newline>` 转义,其他 `\X`(如 `\h`/`\c`/`\U`)字面保留 `\`。其中 `\<newline>` 表示 `\` + `\n`:
-
-```
-echo \
-> hello
-hello
-```
-
-| 要表达的参数 | 写法 | 解析结果 |
-| --- | --- | --- |
-| 普通参数、路径 | `-O2`、`src/main.cj` | 原样 |
-| 含空格 | `-L"third party/lib"` / `-L'third party/lib'` / `-Lthird\ party/lib` | 同为 `-Lthird party/lib` |
-| Windows 路径(跨平台写法) | `'C:\Users\liso'` / `"C:\Users\liso"` | ✅ 原样(引号内不吃 `\`) |
-| 字面 `"` | `a\"b` / `"a\"b"` / `'a"b'` | `a"b` |
-| 字面 `\` | `a\\b` / `'a\b'` | `a\b` |
-| `#` 起始的字面参数 | `\#flag` / `'#flag'` / `"#flag"` | `#flag` |
-| 字面 `@` 文件名 | `\@report.cj` | `@report.cj` 且不触发展开 * |
-| 空参数 | `""`(`a""b` → `ab`) | 空参数 / `ab` |
-| 续行 | 行尾 `\`:`--output=\` + 下一行 `build/app` | `--output=build/app` |
-| 裸写 Windows 路径 | `C:\Users\liso\main.cj` | ❌ `C:Userslisomain.cj`(无引号吃 `\`) |
-
-> \* 现行规则未定义"转义后的 `@` 是否触发展开",本设计明确为**不展开**(详见设计稿 v2 §2.5 注)。`@` 起始、未转义的参数一律按 rsp 引用,文件不存在直接报错(§4.3.1 决策记录)。
-
-### 4.3.2.1 示例
+常见写法：
 
 ```text
-# build/options.rsp
---output build/app
---output-type=exe
--O2
--L"third party/lib"           # 引号保留空格
--lfoo
-src/main.cj
+-O2 -g                         → 两个参数
+-L"third party/lib"            → 一个参数 -Lthird party/lib
+a\ b                          → 一个参数 a b
+# comment                     → 两个普通参数 #、comment（不是注释）
 ```
 
-```text
-# debug.rsp
-@common.rsp -g                 # 同一行混合 rsp 引用与普通参数,空格分隔
--O0
-```
+LLVM GNU 与 GNU/GCC（libiberty）共享大量常见写法，但在单引号内反斜杠、空参数、续行和未闭合引号等边界上可能不同，因此本方案兼容目标应明确写作 **LLVM GNU**。
 
-```text
-# escape.rsp
-# 无引号:\ 转义 ,可转义空格/引号
-a\ b                          # → a b
-a\"b                          # → a"b(无引号 \" → 字面 ")
-# Windows 路径:用单引号或双引号包(免吃 \);无引号会吃 \ 如 C:\Users→C:Users
-'-LC:\Program Files\lib'      # → -LC:\Program Files\lib
-"-LC:\Program Files\lib"      # → -LC:\Program Files\lib(双引号 \P 字面)
-"-LC:\Program Files\\lib"      # → -LC:\Program Files\lib(双引号 \P 字面)
-# 含字面 " 的值:双引号包 + \"
-"-DNAME=\"foo\""              # → -DNAME="foo"
-# 同时含 " 和 ':双引号包 + \",' 字面
-"a\"b'c"                      # → a"b'c
-# 空参数:空引号生成一个空 token(空参数的唯一写法)
-""                            # → (空参数,不是被丢弃)
-a""b                          # → ab(空串参与拼接,不切 token)
-```
+## A0.3 方案三：Swift/LLVM 分平台规则
 
-行续接与引号跨行示例(续行为方案二语义;方案一中无引号续接已删除,仅双引号内 `\<newline>` 续接有效,见 §4.3.1 规则表"行尾 `\`"行与"换行与跨行"行;"行续接"= 行尾 `\` + 换行符整体吃掉,token 从下一行继续拼接):
+本方案参照 Swift Driver/LLVM 的做法，由宿主平台选择 tokenizer：
 
-```text
-# continuation.rsp —— 行续接(正常用法)
---output=\
-build/app                    # 无引号续接:两行拼成一个 token --output=build/app
--L"third \
-party/lib"                   # 双引号内续接:token -Lthird party/lib,等价于单行 -L"third party/lib"
-# 注:行尾 \ 必须紧贴换行;\ 后若再有空格,则退化为转义空格,不再续接
-```
+- Windows：LLVM Windows tokenizer，目标语义为 MSVC/CRT；
+- Linux/macOS：LLVM GNU tokenizer，与方案二相同。
 
-```text
-# crossline-1.rsp —— 双引号跨行(错误示例):第 1 行报 unterminated_quote(含行号)
-# 行尾没有 \,  单引号内部 不支持 \
--L"third
-party/lib"
+文件级机制（UTF-8、CRLF、读取错误和内容校验）保持一致；字符级解析由所选 tokenizer 决定。因此同一 rsp 若使用平台特有写法，不保证跨平台得到相同参数序列。
 
--L'third \
-party/lib'
-
-```
-### 4.3.3 方案三:两套规则集(Windows = CRT,POSIX = 现行 bash 风格)
-
-**CRT 背景**(术语见 §1.1.1 关键术语速览):Windows 程序启动时,OS 只递给一整条命令行字符串,切分成 argv 由 CRT 启动代码完成,这套切分规则即"CRT 规则 / CRT 套"(`CommandLineToArgvW` 同源)。它对 `\` 的处理与 shell 完全不同:`\` 仅在紧贴 `"` 时特殊(下文"2n 配对规则"),其余位置一律普通字符。
-
-- **《Parsing C command-line arguments》**(Microsoft Learn,CRT 官方文档)——空白切分、引号开合、`\"` 字面引号、反斜杠-引号配对(2n)规则逐条成文,本节规则表即按此对齐:<https://learn.microsoft.com/en-us/cpp/c-language/parsing-c-command-line-arguments>
-- **`CommandLineToArgvW`**(Win32 API 文档,同源实现,2n 规则成文):<https://learn.microsoft.com/en-us/windows/win32/api/shellapi/nf-shellapi-commandlinetoargvw>
-- **MSVC `link.exe` rsp 官方文档**(仅约定空白与引号,完整词法以 CRT 文档为准):<https://learn.microsoft.com/en-us/cpp/build/reference/at-specify-a-linker-response-file>
-
-**公共机制与平台词法的边界**：方案三只在文件级机制上保持一致，包括 UTF-8 解码、CRLF 处理、顶层/嵌套 rsp 的路径基准、循环检测、最大深度、文件错误和内容校验。参数**词法**不属于公共规则：Windows 主机选择 CRT 套，POSIX 主机选择现行 bash 套；引号、反斜杠、`#` 注释和跨行行为均以所选词法套为准。因此，同一 rsp 文件若包含平台特有写法，不承诺在另一平台得到相同参数序列。
-
-下表列出 CRT 套相对公共文件级机制的词法差异：
+### A0.3.1 Windows：MSVC/CRT 规则
 
 | 字符 / 序列 | 处理规则 | 示例 → 解析结果 |
 | --- | --- | --- |
-| 空格、Tab、`\n`、`\r`、`\f`、`\v` | 切分参数(`\r` 按空白,兼容 CRLF 文件) | `-O2 -g` → 2 个参数 |
-| `"` | 引号开合;引号内空白不切分 | `-L"C:\Program Files\lib"` → `-LC:\Program Files\lib` |
-| `\"`(1 个 `\` 紧贴 `"`) | 字面 `"`(1 个 `\` 减半剩 0 个),引号**不在此处**闭合(闭合靠后面没有 `\` 的 `"` ) | `"-DMSG=\"a b\""` → `-DMSG="a b"` |
-| 2n 个 `\` + `"`(偶数) | `\` 剩 n 个,`"` 正常开/合引号 | `"C:\lib\\"` → `C:\lib\` |
-| `\` + 非 `"` 字符 | **两字符都字面保留**(`\` 不转义任何东西) | `C:\Users\liso` → `C:\Users\liso`;`a\ b` → `a\` + `b`(空格仍切分) |
-|有 2n+1 个(奇数) | 剩 n 个 `\`,该 `"` 变成字面引号、不闭合。不紧贴 `"` 的 `\` 一律原样(含行尾 `C:\`),**不转义、无续接** | `C:\lib\\\"` → `C:\lib\"` |
-| `'` | **纯字面量:没有任何语法含义**,原样进 token(不分组、不去除、不转义) | `-L'x y'` → `-L'x`、`y'` |
-| `#`(token 起始或词中) | 普通字符，不触发行注释 | `# 注释` → 参数 `#`、`注释` |
-| `@`(token 起始) | 嵌套 rsp 展开(相对路径按父 rsp 目录) | `@common.rsp` → 就地展开 |
-| `$`、`` ` ``、`~`、`*`、`&` | 普通字符,**无变量/命令/glob 展开** | `$HOME` → 字面 `$HOME` |
-| `""` | 空参数 token | `""` → 1 个空参数;`a""b` → `ab` |
-| 引号内换行 | 按普通字符继续；引号可跨物理行，直到遇到未转义的 `"` 或 EOF | `"a` + 换行 + `b"` → 一个含换行的参数 |
-| cmd `^`、PowerShell `` ` `` 等转义符 | **与 rsp 无关**:那是 shell 命令行层的转义,rsp 文件内容只按本表解析 | — |
+| 空白 | 引号外切分参数 | `-O2 -g` → 两个参数 |
+| `"` | 引号开合，引号内空白不切分 | `-L"C:\Program Files\lib"` → `-LC:\Program Files\lib` |
+| 2n 个 `\` + `"` | 输出 n 个 `\`，引号正常开合 | `"C:\lib\\"` → `C:\lib\` |
+| 2n+1 个 `\` + `"` | 输出 n 个 `\` 和字面 `"` | `\"` → `"` |
+| `\` + 非 `"` | 反斜杠字面保留 | `C:\Users\x` → 原样 |
+| `'` | 普通字符，不参与分组 | `-L'x y'` → 两个参数 |
+| `#`、`$`、glob | 普通字符，不执行注释或展开 | `#` → 普通参数 |
 
-**`'` 与 `''`**:`'` 无任何语法含义(见上表),不存在"单引号内"上下文——两个 `'` 之间,`"` 照样开合剥除、空白照样切分、2n 配对照常。例:`'-De=a"b c"'` → 1 个 token `'-De=ab c'`(而非 `-De=a"b c"`);`'a b'` → `'a`、`b'` 两个 token;`''` → 两字符 token `''`(非空参数)。
+### A0.3.2 POSIX：LLVM GNU 规则
 
-**核心**:含空格就包 `"`,引号内 `\"` 转义引号、尾部 `\` 双写;其余一切字符(含 `\` 与 `'`)照字面写。
+与方案二完全相同，直接使用 LLVM GNU tokenizer，不再维护一套 cjc bash 变体。
 
+方案三与 Swift 的共同点在于：格式选择由宿主/消费者确定，Windows 硬兼容边界使用 CRT 规则，POSIX 使用 LLVM GNU 规则。代价是同一文件可能因宿主平台不同而得到不同结果。
 
-**POSIX 套(macOS/Linux)**:与方案二同一套现行 bash 风格规则,**零改动**(公共规则见 §4.3.1,三通道差异见 §4.3.2;与 GNU 生态的语义差异对照见设计稿 v2 §2.4)。
+## A0.4 方案四：Rust 默认 argfile
 
-### 4.3.4 方案四:一行一参
-
-**一行 = 一个参数,行内一切字符字面**。没有引号、没有转义、没有注释、没有行内分隔;零字符空行即空参数,仅空白行跳过(见下表)。
+本方案严格采用 Rust 默认 argfile 的模型：**每行一个参数，行内容原样作为 payload**。
 
 | 元素 | 规则 |
 | --- | --- |
-| 分隔 | **仅 LF**:一行一个参数,行内空格/Tab 是参数内容(字面保留) |
-| 行首尾空白 | **行首/行尾的空白去除,中间的空白原样保留**(空白 = isspace() 集:空格、Tab、`\f`、`\v`;`\r` 已随换行处理)。原因:尾随空白编辑器里不可见,照字面保留会让手滑多敲的空格悄悄混进参数 |
-| 字面 | 行内一切字符原样进参数:`"`、`'`、`\`、`$`、`#`(行首/词中)、`@`(词中)、空格、Tab 均无特殊含义 |
-| 注释 | **不支持**:`#` 行首/词中均为字面,无注释语法(与 GCC/MSVC rsp 一致) |
-| 行尾 `\` | **字面,无续接**(有意不设续行:`C:\` 行尾直写无忧;意图域本不含含 LF 的参数,续行仅排版便利却重引 `C:\` 陷阱,故去掉) |
-| 空参数 | **空行即空参数**:该行零字符 → 一个空参数 token;含空白字符的行不是空行,整行跳过 |
-| `@` 起始参数 | 去掉行首空白后以 `@` 开头仍触发嵌套 rsp 展开(公共语义);字面 `@` 文件用 `./@xxx` 绕行 |
-| 公共机制 | UTF-8 解码与内容校验、CRLF 兼容、嵌套父目录基准、循环检测、32 层上限、软链接、错误诊断:与方案一~三完全一致 |
+| 编码 | UTF-8；非法 UTF-8 直接报错 |
+| 分隔 | 使用文本行作为参数边界；兼容 LF/CRLF |
+| 行内容 | 除行终止符外全部原样保留，包括行首尾空格、引号、反斜杠和 `#` |
+| 引号与转义 | 不存在；`"`、`'`、`\\` 都是普通字符 |
+| 空参数 | 空行表示一个空参数；文件末尾换行本身不额外产生参数 |
+| 参数内换行 | 不可表示；生成器遇到含 LF/CR 的参数时直接报错 |
+| 嵌套 | 不支持；rsp 内的 `@child.rsp` 是普通参数，不递归展开 |
+| 注释 | 不支持；`# comment` 是一个普通参数 |
+| NUL | 不支持，读取时直接报错 |
 
-用例:
+示例：
 
 ```text
 -O2                             → -O2
--Lthird party/lib               → -Lthird party/lib ✅(空格无需引号,整行即参数)
-  -DMSG=a  b                    → -DMSG=a  b ✅(首尾空白去掉,中间空格原样保留)
-C:\Users\test\test2             → 原样 ✅
--LC:\                           → -LC:\ ✅(行尾 \ 字面,无续行陷阱)
-a\ b                            → a\ b ✅(行内 \ 与空格全字面,不裂开)
--DVER=1#dev                     → -DVER=1#dev(词中 # 字面)
-#flag                           → #flag(行首 # 也是字面,无注释)
--L"third party/lib"             → -L"third party/lib" ⚠(引号字符进参数,不剥不转义)
--g -O2 -lfoo                    → 一个参数 ⚠(行内多参数不支持;自空白分隔 rsp 拷来的文件需改为每行一条)
-                                → 空参数(该行零字符;首行/末行同理)
-␣                               → 跳过(行内出现过空白字符就不是空参数;排版空行至少留一个空白字符)
+-Lthird party/lib               → -Lthird party/lib（一个参数）
+  -DMSG=a  b                    → 保留行首、行尾和中间空格
+C:\Users\test\main.c            → 原样
+"-DMSG=hello world"            → 引号也进入参数值
+@child.rsp                      → 普通参数，不递归展开
+<空行>                          → 空参数
 ```
 
-**与业界及方案一~三的有意差异**:
+方案四的优点是写端与读端都不需要 quoting 算法；限制是无法直接读取 Ninja/CMake 按 GNU/MSVC quoting 生成的 rsp。若后续需要兼容格式，应通过显式方言入口增加，而不是修改默认逐行格式。
 
-1. **一行一参**:GCC/clang/GNU ld/MSVC 的 rsp 均为"空白分隔"(一行可多参数)
-2. **引号进参数**:引号字符保留在参数值中,无转义补救
-3. **无 `#` 注释**(与方案一~三不同;与 GCC/MSVC rsp 一致,故 `#` 起始参数可直接写);**`@` 起始参数不可表达**(绕行 `./@x`);**零字符空行产空参数**(业界 rsp 忽略空行;排版空行留一个空格即可跳过)。
-4. **无续行**:长参数不能折行(表达力不变,见上表"行尾 `\`"行)。
+## A0.5 四方案对比
 
-### 4.3.5 四方案对比(方案一~四)
-
-#### 4.3.5.1 各平台习惯写法的支持情况
-
-| 习惯写法 | 习惯来源 | 方案三 Win 套 | 方案三 POSIX 套 | 方案二 | 方案一 | 方案四(极简) |
-| --- | --- | --- | --- | --- | --- | --- |
-| 裸反斜杠路径 `C:\Users\x` | Windows/CRT | ✅ | ❌ | ❌(需加引号或 `/`) | ✅ | ✅(全字面) |
-| `\ ` 转义空格 | POSIX/bash | ❌ | ✅ | ✅ | ❌(改用引号 `"a b"`) | ❌(无需转义:一行一参,空格直写) |
-| `'...'` 单引号分组 | POSIX/bash | ❌(普通字符) | ✅ | ✅ | ✅ | ❌(无引号机制;整行即参数,无需分组) |
-| `#` 注释、行尾 `\` 续行 | bash/cjc 现行 | ❌ 无 `#` 注释、无续行 | ✅ | ✅ | ⚠ `#` 有/续行无(行尾 `\` 字面,续行仅双引号内) | ❌ 无 `#` 注释、无续行(行尾 `\` 字面) |
-| `\#flag` / `\@file` 无引号转义 | POSIX/bash | ❌ | ✅ | ✅ | ❌(`\#` 改用 `'#flag'`;`\@` 改双引号内转义) | ❌(`#`/`@` 起始参数不可表达,绕行 `./#flag`、`./@file`) |
-| 引号内 Windows 路径 `"C:\x\y"` | 双方共有 | ✅ | ✅ | ✅ | ✅ | ⚠ 引号是普通字符,会进参数值(此写法本不需要引号) |
-| 一行写多个参数(空白分隔) | GCC/MSVC/CMake 生成物 | ✅ | ✅ | ✅ | ✅ | ❌ 整行变一个参数 |
-| 字面 `@xxx` 输入文件 | — | ⚠ `@` 起始无法表达,绕行:`./@xxx` 路径形式(各案通用) | ✅(`\@`) | ✅(`\@`) | ✅(`"\@xxx"`,双引号内转义) | ❌ 绕行 `./@xxx` |
-
-#### 4.3.5.2 对比总表 
-| 维度 | 方案三(两套) | 方案二(统一 bash 基准) | 方案一(bash + 无引号字面化) | 方案四(一行一参,极简) |
+| 维度 | 方案一：LLVM GNU + 裸路径扩展 | 方案二：LLVM GNU | 方案三：Swift/LLVM 分平台 | 方案四：Rust argfile |
 | --- | --- | --- | --- | --- |
-| Windows 裸路径痛点 | ✅ 解决(CRT 直写) | ❌ 不解决,靠"加引号/正斜杠"书写指引缓解;可选 minimal escape 增强补齐(设计稿 v2 §3.3) | ✅ 解决(无引号字面) | ✅ 解决(全字面,行尾 `\` 亦可) |
-| Windows 引号包路径 | ✅ | ✅(双引号内 `\U` 字面,天然兼容) | ✅(双引号语义不变) | ⚠ 无需引号;若写引号会进参数值 |
-| POSIX 单引号/注释/续行 | ✅(POSIX 套,现行零改动) | ✅(现行零改动) | ⚠ 单引号/注释保留;无引号续行删除(行尾 `\` 字面,续行仅双引号内) | ❌ 无 `#` 注释(`#` 全字面);单引号(普通字符)与续行无 |
-| POSIX 无引号转义写法(`\ `、`\#`、`\@`) | ✅(POSIX 套) | ✅ | ❌ 删除,改用引号等价写法 | ❌ 无转义;`#flag` 直接写(无注释),`@` 起始绕行 `./@x` |
-| 跨平台共享 rsp(进仓配置) | ❌ 3 处差异分平台语义,静默错解析(反例与安全公共子集见设计稿 v2 §2.8) | ✅ 单一语义 | ✅ 单一语义 | ✅ 单一语义(规则最少) |
-| 真实 `@xxx` 输入文件 | Windows 套 `@` 起始无法表达,`./@xxx` 路径形式绕行 | ✅(`\@`) | ✅(`"\@xxx"`) | ❌ `./@xxx` 绕行 |
-| 解析器实现 | 两套 tokenizer(或一套 + 差异点参数化) | 一套 tokenizer(已按现行设计) | 一套 tokenizer(无引号通道一处改动) | 一套 tokenizer,**最简**(2~3 状态) |
+| 一行多个参数 | 支持 | 支持 | 支持 | 不支持 |
+| Windows 裸反斜杠路径 | 支持 | 不支持，反斜杠可能被消费 | Windows 支持；POSIX 不支持 | 支持，整行原样 |
+| LLVM GNU rsp | 除无引号反斜杠外兼容 | 兼容 | POSIX 兼容 | 不兼容 |
+| MSVC/CRT rsp | 不兼容 | 不兼容 | Windows 兼容 | 不兼容 |
+| 引号、转义 | LLVM GNU，唯独无引号 `\` 字面 | LLVM GNU | 按宿主选择 CRT/LLVM GNU | 无语法，引号和 `\` 均为 payload |
+| 注释 | 不支持 | 不支持 | 不支持 | 不支持 |
+| 空参数 | 按 LLVM GNU 行为 | 按 LLVM GNU 行为 | 按所选 tokenizer | 空行表示空参数 |
+| rsp 内嵌套 | 可作为 cjc 文件级扩展，但非 tokenizer 固有能力 | 同左 | 同左 | 不支持，`@` 行为普通参数 |
+| 跨平台同义 | 是 | 是 | 否 | 是 |
+| 实现成本 | LLVM GNU tokenizer 单点修改 | 直接复用 LLVM GNU tokenizer | 同时复用 LLVM Windows/GNU tokenizer | 最低，逐行读取 |
+| 适用场景 | 希望兼容 LLVM 常见写法并优先支持 Windows 裸路径 | 需要直接读取 LLVM 生态 rsp | 同时对齐 Windows 与 POSIX 本地生态 | cjpm 与 cjc 成对控制的机器协议 |
 
-> ¹ 方案二单套内,Windows 的裸反斜杠路径习惯仍不可用;要做到两平台写法全部可用,需 minimal escape 增强(设计稿 v2 §3.3)或改用方案一(§4.3.1)。
+关键取舍：
 
+- 方案一以少量 LLVM 兼容性换取 Windows 裸路径直写；
+- 方案二优先复用和兼容 LLVM 生态；
+- 方案三优先平台原生兼容，接受跨平台语义不同；
+- 方案四优先协议简单和可逆，不承诺读取外部 GNU/MSVC rsp。
 
- 
-
-
-### 4.4 错误诊断
+## A0.6 错误诊断
 
 | 错误类型 | 触发条件 | 报错信息 |
 | --- | --- | --- |
@@ -517,9 +389,9 @@ a\ b                            → a\ b ✅(行内 \ 与空格全字面,不裂�
 | `response_file_unterminated_quote` | 引号内遇裸 `\n`、文件末尾引号未闭合、或双引号末尾 `\` 后无字符(转义序列未完成) | 含文件路径与行号 |
 | `response_file_invalid_content` | 文件解码失败(非法 UTF-8 字节)或含 NUL 字节(误传二进制文件的兜底) | 含文件路径与行号 |
 
-**与业界的有意差异:"文件不存在"直接报错**:`@` 起始参数一律按 rsp 引用,指向的文件不存在时报 `response_file_not_found`。业界做法不同:GCC(libiberty)对"不存在**或不可读**"都原样保留,lld 只对"不存在"保留——本设计有意收紧,理由:①`@` 语义唯一("是 rsp 引用"),不存在就响亮失败,避免把 `@xxx` 静默当输入文件名流出;②字面 `@` 文件名有统一的转义表达(`\@`),不再需要兜底(决策记录见 §4.3.1)。
+**与业界的有意差异:"文件不存在"直接报错**:`@` 起始参数一律按 rsp 引用,指向的文件不存在时报 `response_file_not_found`。业界做法不同:GCC(libiberty)对"不存在**或不可读**"都原样保留,lld 只对"不存在"保留——本设计有意收紧,理由:①`@` 语义唯一("是 rsp 引用"),不存在就响亮失败,避免把 `@xxx` 静默当输入文件名流出;②字面 `@` 文件名有统一的转义表达(`\@`),不再需要兜底(决策记录见附录 A0.1)。
 
-### 4.5 嵌套引用与路径解析基准例子
+## A0.7 嵌套引用与路径解析基准例子
 
 嵌套引用只有一条核心规则:**`@child.rsp` 的相对路径按"父 rsp 文件所在目录"解析,而不是按 cwd**;只有命令行顶层的 `@<file>` 才按 cwd 解析。`@` 后写绝对路径(如 `@D:\cfg\common.rsp`、`@/home/x/common.rsp`)时忽略基准目录、直接按该路径打开——使用者 cd 到任何目录都不影响绝对路径引用;相对路径引用则保持"整个 rsp 目录树拷到别处仍可用"的自包含特性。
 
@@ -557,18 +429,10 @@ cjc @build/debug.rsp src/main.cj
 
 注:展开过程中嵌套的 `@common.rsp`、`@sub/deps.rsp` 虽然形式上出现在了参数序列里,解析基准仍以"父 rsp 所在目录"为准(见上表),不随展开位置变成 cwd。
 
-# **5、结论**
+# **附录 A1:方案一规则的辅助文法**
 
-## 5.1 评审结论
+> **定位**：本附录不是用户规范，也不是实现接口；附录 A0.1 的规则表才是方案一的规范来源。本附录仅提供一份简化辅助文法，便于描述规则结构。
 
-(待评审后填写:通过 / 不通过 + 达成一致的主要观点。)
-
-## 5.2 遗留问题
-
-
-# **附录 A:方案一规则的辅助文法**
-
-> **定位**：本附录不是用户规范，也不是实现接口；正文 §4.3.1 的规则表才是方案一的规范来源。本附录仅提供一份简化辅助文法，便于描述规则结构。
 
 
 ## A.1 简化辅助文法（仅供参考）
@@ -702,11 +566,11 @@ W 的构造(逆运算,逐字符,与 A.9.1 定义 5 一致):不含空白/`"` 且�
 
 -->
 
-# **附录 B:竞品调研**
+# **附录 B:竞品调研与现代 rsp 设计原则**
 
 > **结论先行**:不存在单一"GNU 风格"。解析器按"版本 × 宿主"分四类行为,但存在一个所有解析器共同遵守的**安全公共子集**(§3)——项目读写 rsp 按它来即可。
 
-## 1. 各解析器规则总表
+## B.1 各解析器规则总表
 
 | 规则 | GCC 11.4¹ | clang 14(全平台) | GNU ld 2.38 | ld.lld/ld64.lld(Linux/macOS 宿主) | ld.lld(MinGW 驱动 × Windows 宿主)² | bash(仅参照) |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -723,13 +587,13 @@ W 的构造(逆运算,逐字符,与 A.9.1 定义 5 一致):不含空白/`"` 且�
 ¹ GCC 在向 bash 演进:WinLibs GCC 16.1.0 初测已部分吻合新 libiberty(双引号内仅 5 种转义、单引号字面化),与 GCC 11 已分叉。
 ² lld 的 tokenizer **跟着驱动走**:MachO 驱动(ld64.lld)无条件 GNU 规则(`lld/MachO/DriverUtils.cpp:86`),故 macOS 上与 clang 同款;GNU/ELF 驱动与 MinGW 驱动按宿主 OS 分支(Windows→CRT,其他→GNU),ELF 驱动另可用 `--rsp-quoting=posix|windows` 显式指定(`lld/ELF/DriverUtils.cpp:77-89`)。**Windows 宿主上的 ld.lld(MinGW)是全家唯一 CRT 规则者**。GNU ld 与 gcc 同源 libiberty(`expandargv`/`buildargv`)。
 
-**未闭合 `"`(EOF)**:开了 `"` 却一直等不到收尾的 `"`,此时 GCC/clang/GNU ld/lld(含 Windows CRT)谁都不报错,而是把**从开引号到文件末尾的全部内容**当作同一个参数,然后正常结束。例如 `"test.c` → 参数 `test.c`(后面恰好没别的内容,所以看不出问题;若后面还有几十行参数,会被全部并进这一个参数);只有 bash 视为语法错误。方案一/二有意加严报 `unterminated_quote`(§4.4)。
+**未闭合 `"`(EOF)**:开了 `"` 却一直等不到收尾的 `"`,此时 GCC/clang/GNU ld/lld(含 Windows CRT)谁都不报错,而是把**从开引号到文件末尾的全部内容**当作同一个参数,然后正常结束。例如 `"test.c` → 参数 `test.c`(后面恰好没别的内容,所以看不出问题;若后面还有几十行参数,会被全部并进这一个参数);只有 bash 视为语法错误。方案一/二有意加严报 `unterminated_quote`(见附录 A0.6)。
 
-**常见误区**:clang 的单引号**不是** bash 单引号——引号内外 `\` 一律转义(`'c:\users'` → `c:users`),引号只负责包空格与闭合。CRT(ld.lld-on-Windows)更极端:`'` 根本不是引号——两个 `'` 之间没有字面保护区,`"` 照样开合、空白照样切分(详见 §4.3.3 的 `'` 与 `''` 规则)。
+**常见误区**:clang 的单引号**不是** bash 单引号——引号内外 `\` 一律转义(`'c:\users'` → `c:users`),引号只负责包空格与闭合。CRT(ld.lld-on-Windows)更极端:`'` 根本不是引号——两个 `'` 之间没有字面保护区,`"` 照样开合、空白照样切分(详见附录 A0.3 的 `'` 与 `''` 规则)。
 
-## 2. 实验例表(写法 → 解析结果)
+## B.2 实验例表（写法 → 解析结果）
 
-### 2.1 Linux/WSL 宿主(clang 14 / gcc 11.4 / GNU ld 2.38 / bash 5)
+### B.2.1 Linux/WSL 宿主(clang 14 / gcc 11.4 / GNU ld 2.38 / bash 5)
 
 | rsp 写法 | clang 14 | gcc 11.4 | GNU ld 2.38 | bash 5 |
 | --- | --- | --- | --- | --- |
@@ -758,7 +622,7 @@ W 的构造(逆运算,逐字符,与 A.9.1 定义 5 一致):不含空白/`"` 且�
 
 @ 机制(Linux 三家):嵌套展开、`@'带 空格.rsp'`、`"@x.rsp"`、同文件多次引用重复展开均支持;自引用不挂死(gcc/ld 报 `too many @-files encountered`,clang 达上限后 `@token` 原样透传,与"文件不存在"同文案);`@` 指向不存在文件三家都硬错(gcc 伴生误导性警告 `linker input file unused`);`@ file`(@ 后空格)→ `@` 单独成 token 报错,含空格路径必须 `@'...'`。
 
-### 2.2 Windows 宿主(llvm-mingw 15:clang / gcc 16.1.0 / ld.lld)
+### B.2.2 Windows 宿主(llvm-mingw 15:clang / gcc 16.1.0 / ld.lld)
 
 | rsp 写法 | clang | gcc 16.1.0 | ld.lld |
 | --- | --- | --- | --- |
@@ -776,10 +640,90 @@ W 的构造(逆运算,逐字符,与 A.9.1 定义 5 一致):不含空白/`"` 且�
 | "abc  | 见上 | 加上 | abc|
 | "a'b'c" | 见上 | 加上 | a'b'c|
 
-> 注:表中 `'...'` 是测试脚本的书写记号,**不等于文件字节**——外层 `'` 经 `echo` 写入时会被 shell 剥离。例:本表 `'-De=a"b c"'` 行,由 ld.lld(CRT)结果 `-De=ab c` 可反推文件实际字节为 `-De=a"b c"`(无 `'`);若 `'` 真在文件中,CRT 结果应为 `'-De=ab c'`(`'` 原样保留,见 §4.3.3 的 `'` 与 `''` 规则)。本表末四行为占位残文,需按真实字节复测后订正。
+> 注:表中 `'...'` 是测试脚本的书写记号,**不等于文件字节**——外层 `'` 经 `echo` 写入时会被 shell 剥离。例:本表 `'-De=a"b c"'` 行,由 ld.lld(CRT)结果 `-De=ab c` 可反推文件实际字节为 `-De=a"b c"`(无 `'`);若 `'` 真在文件中,CRT 结果应为 `'-De=ab c'`(`'` 原样保留,见附录 A0.3 的 `'` 与 `''` 规则)。本表末四行为占位残文,需按真实字节复测后订正。
 
 
 
+
+## B.3 现代语言工具链的 rsp 约定与演进
+
+现代语言工具链通常把 rsp 当作“参数载体”，而不是 shell 脚本。需要区分语言驱动器是否公开 `@file` 入口，以及驱动器为后端工具内部生成的临时 rsp；后者不能直接推导出用户语法。更重要的是，格式往往会随命令行限制和生态兼容需求逐步演进，不能只看某个版本的当前行为。
+
+| 工具链 | 用户侧入口 | 已观察/公开的格式倾向 | 证据/对本设计的启示 |
+| --- | --- | --- | --- |
+| Rust `rustc` | `rustc @args.rsp` | 默认按**每行一个参数**读取，行内容原样保留，不执行 shell 引号/反斜杠解析；官方源码另有不稳定的 `-Zshell-argfiles`，开启后才使用 shell 风格解析；默认不递归展开 rsp 内的 `@child.rsp` | **rustc 定义格式，Cargo 负责生成和重试**：Cargo 遇到命令行过长时生成临时 `cargo-argfile.*`。方案四借鉴逐行模型，但其“去首尾空白”与 Rust 不同。[rustc 源码](https://github.com/rust-lang/rust/blob/master/compiler/rustc_driver_impl/src/args.rs)、[Cargo 源码](https://github.com/rust-lang/cargo/blob/master/crates/cargo-util/src/process_builder.rs) |
+| Swift `swiftc`/Swift driver | Swift driver 支持用户参数中的 `@file`，也会按工具能力和命令行长度**自动/强制生成临时 rsp** | **官方源码**：[`Driver.swift`](https://github.com/swiftlang/swift-driver/blob/main/Sources/SwiftDriver/Driver/Driver.swift) 负责递归展开；POSIX 行解析支持反斜杠、shell 引号、空白分隔和 `//` 行首注释；Windows 使用 CRT 风格；[`ArgsResolver.swift`](https://github.com/swiftlang/swift-driver/blob/main/Sources/SwiftDriver/Execution/ArgsResolver.swift) 按每个已序列化参数一行写出，并按目标工具选择 quoting |
+| Go `go` 命令 | `go build` 没有稳定承诺的通用用户侧 `@file` 语法；但 Go 工具链内部的 compile/link 参数文件经历过多次演进 | **Go issue/CL 演进记录**。不能把工具内部参数文件当作用户格式标准，但其迁移过程可作为兼容性设计先例 |
+
+Rust 官方实现的关键语义是“`contents.lines()` 的每一行直接成为一个参数”；默认模式不会把引号当语法，也不会消费反斜杠。Rust 还保留了显式的 `-Zshell-argfiles` 能力，说明**基础格式和增强格式应通过显式开关区分**，不应自动猜测。
+
+Swift 官方实现提供了另一条重要经验：驱动器会根据目标工具是否支持 rsp、命令行是否超限来决定是否生成临时 rsp；生成器把参数逐项序列化，Windows 与 POSIX 使用不同 quoting 规则，并通过 `@path` 传入。这说明“用户读取 rsp”和“工具内部生成 rsp”可以共享容器机制，但词法规则必须由接收工具决定。
+
+### B.3.1 Rust：Cargo 负责兜底，rustc 负责读取
+
+Rust 的职责边界很清晰：`rustc` 只定义和读取 argfile；Cargo 的 `ProcessBuilder` 负责检测 `E2BIG`/Windows 命令行过长错误，创建临时 `cargo-argfile.*`，把每个参数逐行写入，再以 `@file` 重试，完成后删除临时文件。Rust 默认格式要求参数为 UTF-8 且不能包含换行；引号和反斜杠不具备 shell 语义。Rust 还提供不稳定的 `-Zshell-argfiles` 显式切换到 shell 风格解析。
+
+Rust 本身也有清晰的协议演进：
+
+1. **初始实现（2019，Issue [#63576](https://github.com/rust-lang/rust/issues/63576)）**：增加 `@path` 参数文件，采用最小的“一行一个参数”格式；空行表示空参数；支持 Unix/Windows 换行；文件必须是 UTF-8。该设计明确承认不能表达参数内部换行。
+2. **稳定化（2019，Commit [446a43d](https://github.com/rust-lang/rust/commit/446a43da0ee23b3a69e214f030d6d7dada345296)）**：将 `@file` 入口稳定下来，但没有扩展基础格式，保持逐行、无引号、无转义的机器协议。
+3. **显式增强（2023，Commit [684aa2c](https://github.com/rust-lang/rust/commit/684aa2c9d11d9e818ea65f7e4ebd194b97318ac7)）**：新增不稳定 `-Zshell-argfiles`，仅在显式开启时使用 shell 风格解析；默认格式保持兼容。这是“新增语义使用开关隔离，而不是改变旧格式”的典型做法。
+4. **构建侧兜底**：Cargo 在执行 rustc/rustdoc 时负责生成 argfile 和失败重试；`rustc` 不负责为“启动自己”生成 argfile。这验证了“参数数组持有者负责写端”的生成者原则。
+
+这条演进路线体现了“基础格式最小化、增强语义显式开启”：机器生成场景不需要为了手写便利引入复杂 tokenizer；确需 shell 兼容时，通过显式开关而不是猜测文件内容来启用。
+
+### B.3.2 Swift：从支持 response file 到按工具能力自动选择
+
+Swift Driver 的演进重点不在单一词法，而在“按下游工具能力选择协议”：
+
+1. 早期先增加 response-file 展开和参数 tokenization（[初始支持](https://github.com/swiftlang/swift-driver/commit/b86325a9)）；
+2. 随后支持相对路径、递归引用检测、临时文件原子写入和确定性命名（[相对路径](https://github.com/swiftlang/swift-driver/commit/df0e9e19)、[原子写入](https://github.com/swiftlang/swift-driver/commit/6f5e8fed)）；
+3. Windows 场景增加 CRT 风格 tokenizer，并对 `clang.exe` 显式传递 `--rsp-quoting=windows`（[Windows response file](https://github.com/swiftlang/swift-driver/commit/402b22a9)、[Windows quoting](https://github.com/swiftlang/swift-driver/commit/1bd69775)）；POSIX 场景使用另一套 quoting；
+4. 当前 Driver 根据命令行长度和目标工具是否支持 rsp 自动/强制生成临时文件，同时对源文件列表使用独立的 `-filelist` 机制。
+
+因此 Swift 的经验不是“所有 rsp 都一行一参”，而是：**rsp 的写端必须面向具体消费者选择 quoting；专用 filelist 与通用 response file 分离；自动生成和用户手写是两条不同链路。**
+
+### B.3.3 Go：从私有逐行格式逐步走向 GCC 兼容
+
+Go 的 response-file 演进可以概括为三阶段（版本和 CL 以官方 issue/review 记录为准）：
+
+1. **Windows 初始支持（[Issue #18468](https://github.com/golang/go/issues/18468)，[CL 110395](https://go-review.googlesource.com/c/go/+/110395)）**：为解决约 32KB 命令行限制，`cmd/go`/`cmd/compile` 使用临时 response file；格式为每行一个参数，按 `\\n` 切分并去掉 `\\r`，不支持引号和转义。
+2. **转义协议补丁（[Issue #42295](https://github.com/golang/go/issues/42295)，[CL 272870](https://go-review.googlesource.com/c/go/+/272870)，Go 1.17）**：为保留参数中的反斜杠和换行，写端 `encodeArg`、读端 `DecodeArg` 增加专用编码；未知 `\\x` 序列视为非法输入。这是对第一版逐行格式的兼容性补强。
+3. **GCC 兼容重写（[Issue #77177](https://github.com/golang/go/issues/77177)，[CL 737500](https://go-review.googlesource.com/c/go/+/737500)，Go 1.27）**：为兼容 Bazel/Buck 等构建系统生成的标准 rsp，并修复 Windows 裸路径导致的解析问题，改用接近 GCC `libiberty/argv.c` 的 tokenizer，支持空白分隔、引号、转义和续行；旧版 `\\n` 转义格式因此存在 breaking change，需要迁移。
+
+Go 的教训是：私有格式可以快速解决平台限制，但一旦需要接入外部构建生态，就会被迫向事实标准迁移。因此首版应明确兼容目标，并为未来格式升级预留版本/入口，不能把临时内部格式直接承诺为长期公共协议。
+
+CMake/Ninja 则体现了“配置者与执行者分离”：CMake根据编译器和平台生成包含 `rspfile`/`rspfile_content` 的 Ninja 规则，实际构建时由 Ninja 写入 rsp、执行 `tool @file`，成功后删除。换用 Makefile generator 时，rsp 由 CMake生成的 Makefile/辅助命令负责。因此可以说“CMake支持生成 rsp”，但更准确的表述是：**CMake负责决定和描述 rsp 的用法，底层构建执行器负责在构建时落盘**。
+
+## B.4 设计选择与语法后果
+
+| 设计选择 | 必然带来的语法/实现要求 | 设计理念 |
+| --- | --- | --- |
+| 支持一行多个参数 | 以 `isspace()`（至少覆盖空格、Tab、LF、CR，并明确是否含 VT/FF）识别分隔符；因此参数内部需要空格时必须有引号或转义机制 | 优先兼容 GCC/Clang/MSVC 和构建工具生成物，降低迁移成本 |
+| 支持含空格、引号、反斜杠的单个参数 | 引入引号分组、引号拼接和反斜杠转义；必须定义 `\`、`\"`、孤立 `\` 及引号未闭合的行为 | 把文件文本稳定映射为一个 argv 元素，避免路径和宏值静默变形 |
+| Windows 裸路径可直接书写 | 无引号上下文不能沿用 bash 的 `\X` 吃字符规则；需要将无引号 `\` 字面化，或采用独立 CRT 词法 | 首要平台痛点优先，但不能破坏引号内的可逆转义 |
+| 支持空参数 | 保留 `""`/`''` 或定义等价的显式编码；空行是否为空参数必须单独规定，不能靠实现习惯 | 空值是参数序列的一部分，不能与“没有参数”混淆 |
+| 支持注释 | 规定 `#` 只在 token 起始生效，或完全不支持；一旦支持就必须提供表达字面 `#` 的方法 | 可读性和可复制性要服从参数确定性，避免把 GCC 文件误当脚本 |
+| 支持嵌套 `@file` | 规定相对路径基准、循环检测、最大深度、字面 `@` 的编码和错误码 | 组合能力必须可控，不能让递归或 cwd 造成隐式行为 |
+| 支持 CRLF/跨平台共享 | 读取时明确 CRLF 归一化、编码和 BOM；写出时统一 UTF-8/LF | 同一份配置在不同宿主上应得到同一参数序列 |
+| 允许语法演进 | 使用版本标记、新扩展名或命令行开关；旧版本遇到新版本应明确拒绝 | 宁可显式失败，也不静默改变既有参数含义 |
+
+## B.5 rsp 格式演进与兼容原则
+
+1. **参数序列优先**：rsp 的唯一职责是确定地生成 `argv`，不引入变量、命令替换、glob 或环境依赖。
+2. **生成与读取对称**：生成器必须能对任意合法参数进行可逆序列化，读取器不得依赖调用 shell 的二次转义。
+3. **分隔模型稳定**：一旦选择空白分隔或一行一参，后续版本不得默默切换；空行、纯空白行、行首尾空格的含义必须固定。
+4. **能力按版本增加**：新增引号、转义、注释、嵌套等能力时，使用显式版本标记或新入口，不靠猜测格式启用。
+5. **旧版本可识别失败**：遇到不支持的版本或非法语法，在 rsp 展开阶段报告文件路径、行号和错误类型。
+6. **嵌套语义显式化**：支持嵌套就完整定义路径基准、循环和深度；不支持就按普通参数处理，不能出现半展开状态。
+7. **规范文件可移植**：推荐 UTF-8、LF 和稳定路径表示；宿主 shell、cwd、本地编码不能成为隐含输入。
+8. **兼容优先于“看起来简单”**：解析器简单不是唯一目标；应同时衡量生态兼容、可逆序列化、错误可诊断性和长期演进成本。
+
+## B.6 对本方案的归纳
+
+- 方案一选择空白分隔，是为了兼容“单行多个参数”的业界模型，因此必须定义 `isspace()` 分隔集合，并提供引号/转义来表达空格、引号和反斜杠。
+- 方案四选择一行一参，借鉴 Rust 的逐行模型，换取更简单的解析器；但它不是 Rust 的完全复制，也不应宣称兼容 GCC/Clang/MSVC 的通用 rsp。
+- 无论采用哪一方案，文件编码、换行、空参数、`@` 展开、错误诊断和版本演进都必须先于实现确定。
 
 # **附录 c:评审范围**
 
