@@ -7,9 +7,18 @@
 之前一线同事反馈当cjpm编译大型项目（包结构复杂，嵌套层级过多）会出现编译失败的问题：
 
 ``` cmd
-C:\rsp_e2e\ws_multigkg_demo>cjpm build --jobs 8
-error: ""C:\\hlt\\cangjie\\third_party\\llvm\\bin\\ld.lld.exe" "-LC:\\hlt\\cangjie\\third_party\\mingw\\lib\\" "-LC:\\rsp_e2e\\ws_multigkg_demo\\target\\release\\pkg_dep_module_0355\\"
-
+cjpm build --jobs 8 -V
+Compiling package `pkg_dep_module_0370`: cjc.exe -p C:\rsp_e2e\ws_deepchain_demo\pkg_dep_module_0370\src --import-path=C:\rsp_e2e\ws_deepchain_demo\target\release --no-sub-pkg --output-dir=C:\rsp_e2e\ws_deepchain_demo\target\release\pkg_dep_module_0370\ --output-type=staticlib -o=libpkg_dep_module_0370.a
+Compiling package `pkg_dep_module_0369`: cjc.exe -p C:\rsp_e2e\ws_deepchain_demo\pkg_dep_module_0369\src --import-path=C:\rsp_e2e\ws_deepchain_demo\target\release --no-sub-pkg --output-dir=C:\rsp_e2e\ws_deepchain_demo\target\release\pkg_dep_module_0369\ --output-type=staticlib -o=libpkg_dep_module_0369.a
+xx 
+ cjc.exe -p C:\rsp_e2e\ws_deepchain_demo\app\src --import-path=C:\rsp_e2e\ws_deepchain_demo\target\release --no-sub-pkg --output-dir=C:\rsp_e2e\ws_deepchain_demo\target\release\bin\ -L C:\rsp_e2e\ws_deepchain_demo\target\release\pkg_dep_module_0001\ -lpkg_dep_module_0001 -L C:\rsp_e2e\ws_deepchain_demo\target\release\pkg_dep_module_0002\ 
+ 3 -L C:\rsp_e2e\ws_deepchain_demo\target\release\pkg_dep_module_0354\ -lpkg_dep_module_0354 -L C:\rsp_e2e\ws_deepchain_demo\target\release\pkg_dep_module_0355\ -lpkg_dep_module_0355 -L C:\rsp_e2e\ws_deepchain_demo\target\release\pkg_dep_module_0356\ -lpkg_dep_module_0356 -L
+ --output-type=exe -o=app.exe
+Created process failed, errMessage: "The filename or extension is too long.
+".
+Error: failed to compile package `app` with exception occurred
+   Finished `build` profile compilation
+   Executable files at `C:\rsp_e2e\ws_deepchain_demo\target\release\bin`
 ...
 
 le_0061" "-lpkg_dep_module_0060" "-lpkg_dep_module_0059" "-lpkg_dep_module_0030" "-lpkg_dep_module_0029" "-lpkg_dep_module_0028" "-lpkg_dep_module_0027" "-lpkg_dep_module_0002" "-lpkg_dep_module_0001" "--start-group" "-l:libcangjie-std-core.a" "--end-group" "-l:libcangjie-runtime.dll" "-lclang_rt-builtins" "-lboundscheck" "-lm" "-lmsvcrt" "-lmingw32" "-lmoldname" "-lmingwex" "-lmingw32" "-lmsvcrt" "-lpthread" "-ladvapi32" "-lshell32" "-luser32" "-lkernel32" "-lmingw32" "-lmoldname" "-lmingwex" "-lmsvcrt" "C:\\hlt\\cangjie\\third_party\\mingw\\lib\\crtend.o" ": command failed (The parameter is incorrect.)
@@ -22,9 +31,28 @@ Error: cjpm build failed
 ### 1.1.1 目标
 
 
-为绕开上述系统命令行长度限制,本特性为 `cjc` 提供一种"从文件读取命令行参数"的能力。出现该问题一定是因为涉及编译大型项目，输入了太多的自定义的内容，例如链接的路径、链接所需要的库（包括静态库、动态库、bc文件），涉及太多的中间产物。因此，我们更加倾向将该文件看作是编译过程的中间产物，而非需要开发者过度关注。
+为绕开上述系统命令行长度限制,本特性为 `cjc` 提供一种"从文件读取命令行参数"的能力。出现该问题一定是因为涉及编译大型项目，输入了太多的自定义的内容，例如链接的路径、链接所需要的库（包括静态库、动态库、bc文件），涉及太多的中间产物。因此，我们更加倾向将该文件看作是编译过程的中间产物，而非需要开发者过度关注。例如这个文件中的内容可以为下列所示，其中含有了编译参数：
+```
+--import-path=C:\rsp_e2e\ws_deepchain_demo\target\release --no-sub-pkg --output-dir=C:\rsp_e2e\ws_deepchain_demo\target\release\bin\ 
+-L C:\rsp_e2e\ws_deepchain_demo\target\release\pkg_dep_module_0001\ -lpkg_dep_module_0001 -L C:\rsp_e2e\ws_deepchain_demo\target\release\pkg_dep_module_0002\ 
+-L C:\rsp_e2e\ws_deepchain_demo\target\release\pkg_dep_module_0354\ -lpkg_dep_module_0354 
+-L C:\rsp_e2e\ws_deepchain_demo\target\release\pkg_dep_module_0355\ -lpkg_dep_module_0355 
+-L C:\rsp_e2e\ws_deepchain_demo\target\release\pkg_dep_module_0356\ -lpkg_dep_module_0356 -L
+```
+之后可以将其传递给cjc， 例如：
 
+```text
+cjc  @options.rsp -O2
+```
 
+该文件中含有的参数在选项解析前就地展开，展开后的参数顺序与直接写在命令行中一致：
+
+```text
+命令行： cjc -O0 @build/compile.rsp -O2
+rsp：    -Lthird-party/lib
+         src/main.cj
+结果：   cjc -O0 -Lthird-party/lib src/main.cj -O2
+```
 **术语**:该文件即业界通称的 **response file(响应文件)**,常取扩展名 `.rsp`(故简称 rsp 文件)——一份纯文本参数清单,由工具自己读取并展开,以绕开 shell/OS 的命令行长度限制。
 https://gcc.gnu.org/wiki/Response_Files 
 
@@ -43,7 +71,7 @@ https://gcc.gnu.org/wiki/Response_Files
 # **2、业界竞品分析**
 
 ## 2.1 业界产品支持情况
-目前调研了下列工具，全部都支持response file机制
+目前调研了下列工具，全部都支持response file机制，均支持 @xx.file 作为response file
 | 工具 | 用户手册 |
 | --- | --- |
 | GCC | <https://gcc.gnu.org/onlinedocs/gcc/Overall-Options.html> | libiberty `argv.c` 的 `expandargv` |
@@ -51,10 +79,8 @@ https://gcc.gnu.org/wiki/Response_Files
 | clang / lld | 无专门手册页 | `llvm/lib/Support/CommandLine.cpp`(`ExpansionContext::expandResponseFiles`)+ `lld/Common/Args.cpp` |
 | MSVC `link.exe` | <https://learn.microsoft.com/en-us/cpp/build/reference/at-specify-a-linker-response-file> | 闭源,以文档为准 |
 | Rust `rustc` | [`@path` 参数文件](https://doc.rust-lang.org/rustc/command-line-arguments.html#path-load-command-line-flags-from-a-path) | [`rustc_driver_impl/src/args.rs`](https://github.com/rust-lang/rust/blob/master/compiler/rustc_driver_impl/src/args.rs)；稳定化 Issue [#63576](https://github.com/rust-lang/rust/issues/63576) / Commit [446a43d](https://github.com/rust-lang/rust/commit/446a43da0ee23b3a69e214f030d6d7dada345296) |
-| Rust Cargo | 无独立用户格式文档 | [`cargo-util/process_builder.rs`](https://github.com/rust-lang/cargo/blob/master/crates/cargo-util/src/process_builder.rs) 的 `retry_with_argfile` |
-| Swift Driver | [Swift Driver 仓库](https://github.com/swiftlang/swift-driver)；`swiftc` 用户手册未单独定义统一 rsp 语法 | [`Driver.swift`](https://github.com/swiftlang/swift-driver/blob/main/Sources/SwiftDriver/Driver/Driver.swift)、[`ArgsResolver.swift`](https://github.com/swiftlang/swift-driver/blob/main/Sources/SwiftDriver/Execution/ArgsResolver.swift)；演进提交见 [response-file 初始支持](https://github.com/swiftlang/swift-driver/commit/b86325a9)、[Windows 支持](https://github.com/swiftlang/swift-driver/commit/402b22a9) |
+| Swift  | [Swift Driver 仓库](https://github.com/swiftlang/swift-driver)；`swiftc` 用户手册未单独定义统一 rsp 语法 | [`Driver.swift`](https://github.com/swiftlang/swift-driver/blob/main/Sources/SwiftDriver/Driver/Driver.swift)、[`ArgsResolver.swift`](https://github.com/swiftlang/swift-driver/blob/main/Sources/SwiftDriver/Execution/ArgsResolver.swift)；演进提交见 [response-file 初始支持](https://github.com/swiftlang/swift-driver/commit/b86325a9)、[Windows 支持](https://github.com/swiftlang/swift-driver/commit/402b22a9) |
 | Go  | 无稳定用户文档；主要通过 Issue/CL 演进 | 初始支持 [Issue #18468](https://github.com/golang/go/issues/18468)/[CL 110395](https://go-review.googlesource.com/c/go/+/110395)；转义补丁 [Issue #42295](https://github.com/golang/go/issues/42295)/[CL 272870](https://go-review.googlesource.com/c/go/+/272870)；GCC 兼容 [Issue #77177](https://github.com/golang/go/issues/77177)/[CL 737500](https://go-review.googlesource.com/c/go/+/737500) |
-| CMake / Ninja | [Ninja `rspfile` 文档](https://ninja-build.org/manual.html)；CMake 平台模块中的 `CMAKE_<LANG>_USE_RESPONSE_FILE_FOR_*` 配置 | CMake 生成规则，Ninja 在执行前写入并在成功后删除 `rspfile` |
 具体字符行为及实验数据见附录 B。
 
 ## 2.2 rsp文件生成时机
@@ -78,98 +104,87 @@ https://gcc.gnu.org/wiki/Response_Files
 
 | 格式 | 主要使用者 | 核心规则 | 跨平台性 | 兼容性 | 设计动机与指导思想 |
 | --- | --- | --- | --- | --- | --- |
-| MSVC/CRT（Windows 规则） | `link.exe`、`cl.exe`、`lld-link`、`clang-cl` | 空白分隔；仅双引号分组；反斜杠只在紧邻 `"` 时使用 2n/2n+1 规则；不支持 shell 变量、glob、注释和续行 | **低**。主要服务 Windows | Windows 生态内兼容性高；与 GNU/GCC、Rust 格式不兼容 | Windows 生态兼容约束 |
-| GNU/GCC（libiberty） | GCC、GNU ld、`ar` 等 binutils 工具；Go 1.27 开始向其兼容 | 空白分隔；单双引号分组；反斜杠转义；不执行变量、命令和 glob 展开；引号内转义和换行行为以具体 libiberty 版本为准 | **中** | GCC 生态内兼容性高；与 LLVM GNU 常用子集兼容，但不能保证空参数、续行、引号等边界完全一致；与 MSVC、Rust 不兼容 | 接近 shell，Unix 工具链标准 |
+| MSVC/CRT（Windows 规则） | `link.exe`、`cl.exe`（微软 MSVC 的 C/C++ 编译器）、`lld-link`、`clang-cl`（clang-msvc版本） 、`swift(windows)`| 空白分隔；仅双引号分组；反斜杠只在紧邻 `"` 时使用 2n/2n+1 规则；不支持 shell 变量、glob、注释和续行 | **低**。主要服务 Windows | Windows 生态内兼容性高；与 GNU/GCC、Rust 格式不兼容 | Windows 生态兼容约束 |
+| GNU/GCC | GCC、GNU ld、`ar` 等 binutils 工具；Go 1.27 开始向其兼容 | 空白分隔；单双引号分组；反斜杠转义；不执行变量、命令和 glob 展开；引号内转义和换行行为不同版本有所不同 | **中** | GCC 生态内兼容性高；与 LLVM GNU 常用子集兼容，但不能保证空参数、续行、引号等边界完全一致；与 MSVC、Rust 不兼容 | 接近 shell，Unix 工具链标准 |
 | LLVM GNU | 非 CL 模式的 Clang、lld；Linux/macOS Swift | 空白分隔；单双引号分组；反斜杠转义；不支持注释和变量/glob 展开；`""`/`''` 不产生空参数 | **中** | LLVM 生态内兼容性高；与 GNU/GCC 常用输入兼容；与 MSVC、Rust 不兼容 | LLVM 生态  |
-| Swift分平台格式 | Swift | macOS/Linux 使用 LLVM GNU tokenizer；Windows 使用 LLVM Windows/CRT tokenizer | **低** | POSIX 端与 LLVM GNU 兼容，并与 GNU/GCC 常用输入互通；Windows 端与 MSVC/CRT 兼容 | 根据平台选择已有生态规则 |
 | Rust 零语法 | `rustc` 默认 argfile | 一行一个参数；无引号、无转义、无嵌套；UTF-8；参数内换行不可表示 | **高**  | 最低| 规则简单，跨平台 |
 
-三种现代工具链的演进重点不同：Rust 保持基础格式稳定，通过显式入口增加 POSIX shell 风格（并非严格 GNU/GCC 兼容）的格式；Go 从私有逐行协议转向 GNU/GCC 兼容格式；Swift 采用 macOS/Linux LLVM GNU、Windows CRT 的分平台策略，主要演进生成时机、能力声明和进程内/进程外执行边界。详细过程见附录 B.3。
+其中LLVM gnu跟gcc的规则基本一致，主要是空串的行为有所差异， gcc会保留空串 ，但LLVM gnu则会忽略。（另外不同版本的Gcc转义的情况有所不同）具体可见B.1 汇总。
 
 
 ## 2.4 业界产品主要演进过程
-详细过程见附录 B.3
 
-（1）rust 2019年支持rsp文件并合入main分支， 2023年解决ninja 输入的文件的不兼容问题，引入了 `-Zshell-argfiles`以支持 shell语法。该特性以实验特性开放。
+（1）rust 2019年支持rsp文件并合入main分支， 2023年解决ninja 输入的文件的不兼容问题，引入了 `-Zshell-argfiles`以支持 shell语法（并非严格 GNU/GCC 兼容的格式）。该特性以实验特性开放。
 
-（2）go 语言为解决 windows 32kb 限制开始支持，格式为一行一个参数，后续为为保留参数中的反斜杠和换行开始引入转义，于2026年为兼容 Bazel/Buck 等构建系统生成的标准 rsp，改用GCC方式。
+（2）go 语言为解决 windows 32kb 限制开始支持，格式为一行一个参数，后续为为保留参数中的反斜杠和换行开始引入转义，于2026年为兼容 Bazel/Buck 等构建系统生成的标准 rsp，改用GNU/GCC方式。
 
 （3）swift则较为稳定，mac/linux上使用 llvm Gnu方式，而windows 上使用MSVC/CRT方式。
+
+三种现代工具链的演进详细过程见附录 B.3。
 
 # **3、本特性的设计/实现方案**
 
 ## 3.1 选项定位与设计定位
 
-cjc 提供编译选项 `@<file>`:以 `@` 开头、后跟 rsp 文件路径构成一个命令行参数,如 `@build/options.rsp`,用于在编译时从文件中读取编译参数。cjc 读取 `<file>` 中的参数序列,**就地替换**该 `@<file>` 参数;替换后 cjc 的行为,与用户把这些参数手工写在命令行该位置**完全等价**。
+cjc 新增编参数文件 `@<file>`:以 `@` 开头、后跟 rsp 文件路径构成一个命令行参数,如 `@build/options.rsp`,用于在编译时从文件中读取编译参数。cjc 读取 `<file>` 中的参数序列,**就地替换**该 `@<file>` 参数;替换后 cjc 的行为,与用户把这些参数手工写在命令行该位置**完全等价**。另外，该文件目前想仅支持UTF-8编码。
 > 但是这里会引入一个兼容性问题 ，就是之前可以编译的@file.cj 此时会被识别成参数文件，但是考虑到这种场景并不常见， 因此想沿用业界普遍用法以@标识rsp文件。
 
 
 本特性首先解决“大型工程中无法用普通命令行启动 cjc”的问题。
 
 ```text
-cjpm / Ninja / CMake
+cjpm / CMake
     └─ 根据完整 argv 生成 rsp
          └─ cjc 读取 rsp 并恢复 argv
               └─ 进入既有选项解析和编译流程
 ```
-
-
-## 3.2 接口与展开流程
-
-cjc 接受 `@<file>` 参数：
-
-```text
-cjc -O0 @build/compile.rsp -O2
-```
-
-rsp 在选项解析前就地展开，展开后的参数顺序与直接写在命令行中一致：
-
-```text
-命令行： cjc -O0 @build/compile.rsp -O2
-rsp：    -Lthird-party/lib
-         src/main.cj
-结果：   cjc -O0 -Lthird-party/lib src/main.cj -O2
-```
-
-通用处理流程如下：
+处理流程如下：
 
 1. 识别 `@<file>`
 2. 读取文件并按所选格式恢复参数序列；
 3. 在原位置替换 `@<file>`；
 4. 将完整参数数组交给现有选项解析器。
 
-## 3.3 方案设计
+## 3.2 rsp文件规则
 
-参照第二章业界情况，类似于rust一行一参数的情况兼容性不好，可以参考go rust都处于演进过程 ，特别是go 已经取消了一行一参数的设计；而GCC 风格对于windows 的场景并不友好，因此目前倾向于使用 LLVM GNU的方式，即参考 swift实现或者基于swift实现一个仓颉特有跨平台。目前识别到cangjie rsp的主要生成者是cjpm 以及cmake。cjpm在windows中并不使用gcc风格。 cmake（就算是之后需要适配Bazel等构建工具）等构建工具都支持定义rsp的写法，例如cmake的 CMAKE_<LANG>_USE_RESPONSE_FILE_FOR_* 。
+参照第二章业界情况，类似于rust一行一参数的情况兼容性不好，可以参考go rust都处于演进过程 ，特别是go 已经取消了一行一参数的设计；而为了方便windows 用户不想使用gcc 这种全平台一致的方式，目前想参考 swift实现或者基于swift实现一个仓颉特有跨平台。该文件目前仅支持 UTF-8编码（当前主流编码）。
 
 详细字符规则、示例和逐项比较见附录 A0。
-### 3.3.1 分平台
+### 3.2.1 分平台
 参考Swift做法，使用 mac/linux 使用llvm GNU, window使用CRT规则。举个例子：
+| rsp 内容 | macOS/Linux(LLVM GNU) | Windows(CRT) |
+| --- | --- | --- |
+| `-L"third party/lib"` | `-Lthird party/lib` | `-Lthird party/lib` |
+| `C:\Users\test\main.cj` | `C:Userstestmain.cj` | `C:\Users\test\main.cj` |
+| `'a b'` | `a b`(一个参数) | `'a`、`b'`(两个参数,单引号保留) |
+| `a\ b` | `a b`(一个参数) | `a\`、`b`(两个参数) |
+| `"C:\lib\\"` | `C:lib\` | `C:\lib\` |
+| `# comment` | `#`、`comment` | `#`、`comment` |
+| `pre"a b"post` | `prea bpost`(一个参数) | `prea bpost`(一个参数) |
 
-```text
-rsp 内容                         macOS/Linux             Windows
--L"third party/lib"             -Lthird party/lib        -Lthird party/lib
-C:\Users\test\main.cj           C:Userstestmain.cj       C:\Users\test\main.cj
-'a b'                           a b（一个参数）           'a、b'（两个参数，单引号保留）
-a\ b                            a b（一个参数）           a\、b（两个参数）
-"C:\lib\\"                     C:lib\                   C:\lib\
-# comment                       #、comment                #、comment
-pre"a b"post                   prea bpost（一个参数）     prea bpost（一个参数）
-```
+### 3.2.2 平台统一
+基于LLVM GNU 进行定制化，主要修改点将无引号 \ 改为字面字符，尽在"" 内部支持转义。使 Windows 路径可直接书写。举个例子：
 
-### 3.3.2 跨平台
-基于LLVM GNU 进行定制化，主要修改点将无引号 \ 改为字面字符，使 Windows 裸路径可直接书写。举个例子：
+| rsp 内容 | 解析结果 |
+| --- | --- |
+| `-L"third party/lib"` | `-Lthird party/lib` |
+| `C:\Users\test\main.cj` | `C:\Users\test\main.cj` |
+| `a\ b` | `a\`、`b`(两个参数) |
+| `"C:\lib\\"` | `C:lib\` |
+| `# comment` | `#`、`comment`(不是注释) |
+| `pre"a b "post` | `prea b post`(一个参数,末尾空格保留) |
 
-```text
-rsp 内容                         解析结果
--L"third party/lib"             -Lthird party/lib
-C:\Users\test\main.cj           C:\Users\test\main.cj
-a\ b                            a\、b（两个参数）
-"C:\lib\\"                     C:lib\
-# comment                       #、comment（不是注释）
-pre"a b "post                  prea b post（一个参数，末尾空格保留）
---output=\                      --output=\（无续行）
-```
+
+## 3.3 报错信息提示
+
+虽然目前对于该文件的定位倾向于编译阶段的中间产物， 但是依然会面向用户，因此目前想保留以下必要报错；
+
+| # | 触发条件  | 如何处理|
+| --- | --- | ---|
+| 1 | `@<file>` 文件不存在  | 无报错，参数原样传递下去(含"@"符号)，作为输入文件处理（与 clang、swift行为一致，而rust缺失文件直接报错）
+| 2 | 内容含 NUL/非法 UTF-8（非文本文件）  | 报错处理 （与rust一致） |
+
+
 
 # **4、结论**
 
@@ -180,16 +195,20 @@ pre"a b "post                  prea b post（一个参数，末尾空格保留�
 ## 4.2 遗留问题
 
 
-# **附录 A0:章节3的方案细节**
-## A0.1 3.3.1 分平台 LLVM GNU
 
-本方案mac , linux直接采用 LLVM 的 GNU tokenizer，不增加 cjc 私有字符规则。
+
+# **附录 A0:章节3的方案细节**
+## A0.1 3.3.1 分平台
+
+本方案mac , linux直接采用 LLVM/GNU，不增加 cjc 私有字符规则。
 | 元素 | 规则 |
 | --- | --- |
-| 编码与分隔 | UTF-8；空白分隔；CRLF 兼容 |
+| 编码与分隔 | UTF-8；空白分隔 |
 | 引号 | 单引号和双引号均可分组，引号本身不进入参数；支持引号片段拼接 |
-| 反斜杠 | 按 LLVM `TokenizeGNUCommandLine` 处理；无引号 Windows 路径中的反斜杠可能被消费 |
+| 反斜杠 |  引号内外均作转义符：`\X` → 字面 `X`（如 `\\`→`\`、`\"`→`"`、`\$`→`$`）；无引号 Windows 路径中的反斜杠可能被消费 |
 | 展开 | 不执行变量、命令、波浪号或 glob 展开 |
+| 空参数 | `""`、`''` 不产生参数（见 B.1） |
+
 
 常见写法：
 
@@ -214,7 +233,7 @@ windows 采取如下规则：
 
 ## A0.2： 3.3.2 跨平台 LLVM GNU + Windows 裸路径扩展
 
-本方案以 LLVM `TokenizeGNUCommandLine` 为基线，仅修改**无引号反斜杠**的处理：LLVM GNU 中无引号 `\X` 会消费反斜杠并保留 `X`；本方案改为原样保留 `\X`。其他空白分隔、单双引号、引号拼接等规则保持 LLVM GNU 语义。
+本方案以 LLVM GNU 为基线，仅修改**无引号反斜杠**的处理：LLVM GNU 中无引号 `\X` 会消费反斜杠并保留 `X`；本方案改为原样保留 `\X`。其他空白分隔、单双引号、引号拼接等规则保持 LLVM GNU 语义。
 
 | 元素 | 规则 |
 | --- | --- |
@@ -223,7 +242,26 @@ windows 采取如下规则：
 | 引号 | `'...'`、`"..."` 均用于分组，引号本身不进入参数；允许与无引号片段拼接 |
 | 反斜杠（引号内） | 沿用 LLVM GNU tokenizer 的转义规则 |
 | 反斜杠（无引号） | **扩展点**：一律字面保留，因此 `C:\Users\x` 原样；`a\ b` 被切成 `a\` 和 `b` |
+常见写法：
+```text
+输入                         结果
+-O2 -g                       两个参数：-O2、-g
+-L"third party/lib"          一个参数：-Lthird party/lib
+pre"mid dle"post            一个参数：premid dlepost
+# comment                    两个参数：#、comment（不是注释）
+C:\Users\test               一个参数，反斜杠原样保留
+a\ b                         两个参数：a\、b
+'a\b'                        一个参数；引号内按 LLVM GNU 规则处理反斜杠
+```
 
+与原 LLVM GNU tokenizer 的差异仅发生在无引号状态：
+
+```text
+输入       LLVM GNU          本方案
+C:\x        C:x               C:\x
+a\ b        a b（一个参数）   a\、b（两个参数）
+\#flag      #flag             \#flag
+```
 
 ## A0.3 嵌套引用与路径解析基准例子
 
@@ -263,7 +301,7 @@ cjc @build/debug.rsp src/main.cj
 
 注:展开过程中嵌套的 `@common.rsp`、`@sub/deps.rsp` 虽然形式上出现在了参数序列里,解析基准仍以"父 rsp 所在目录"为准(见上表),不随展开位置变成 cwd。
 
-# **附录 A1：方案一的辅助词法模型**
+# **附录 A1：方案二的辅助词法模型（自定义的rsp文件格式）**
 
 > **定位**：方案一的规范来源是附录 A0.1。本附录只描述“LLVM GNU tokenizer + 无引号反斜杠字面化”的实现结构，不另行定义一套 bash 语法。LLVM GNU 的边界行为以项目实际采用版本的 `llvm::cl::TokenizeGNUCommandLine` 为准。
 
@@ -304,38 +342,16 @@ unquoted_backslash = '\\' ;
 
 也就是在无引号状态下，反斜杠本身进入 token，不与后一个字符组成转义单元。除这一点外，单/双引号、片段拼接以及引号内反斜杠行为沿用 LLVM GNU tokenizer。
 
-## A1.3 解析示例
-
-```text
-输入                         结果
--O2 -g                       两个参数：-O2、-g
--L"third party/lib"          一个参数：-Lthird party/lib
-pre"mid dle"post            一个参数：premid dlepost
-# comment                    两个参数：#、comment（不是注释）
-C:\Users\test               一个参数，反斜杠原样保留
-a\ b                         两个参数：a\、b
-'a\b'                        一个参数；引号内按 LLVM GNU 规则处理反斜杠
-```
-
-与原 LLVM GNU tokenizer 的差异仅发生在无引号状态：
-
-```text
-输入       LLVM GNU          方案一
-C:\x        C:x               C:\x
-a\ b        a b（一个参数）   a\、b（两个参数）
-\#flag      #flag             \#flag
-```
 
 # **附录 B:竞品调研与现代 rsp 设计原则**
 
-> **结论先行**:不存在单一"GNU 风格"。解析器按"版本 × 宿主"分四类行为,但存在一个所有解析器共同遵守的**安全公共子集**(§3)——项目读写 rsp 按它来即可。
 
 ## B.1 各解析器规则总表
 
 | 规则 | GCC 11.4 | clang 14 | GNU ld 2.38 | ld.lld/ld64.lld（Linux/macOS） | ld.lld（MinGW/Windows） | bash（参照） |
 | --- | --- | --- | --- | --- | --- | --- |
 | 空白切 token | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `"` 包空格、可跨行 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `""` 包空格、可跨行 | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | `'` 引号 | ✓(内 `\` 仍转义) | 同左 | 同左 | 同左 | ✗(`'` 是普通字符) | ✓(内全字面) |
 | `\X` → 字面 `X` | 引号内外都转 | 引号内外都转 | 引号内外都转 | 引号内外都转 | ✗(`\` 字面,仅紧邻 `"` 时特殊) | 双引号内仅 `` $ ` " \ `` 5 种 |
 | `\<newline>` | 换行进 token | 换行进 token | 换行进 token | 换行进 token | 字面 | 续行拼接 |
@@ -410,7 +426,8 @@ Rust 没有修改已经稳定的默认格式，而是另加 `@shell:path`。
 - 早期先实现 `swiftc @file` 的读取（[初始提交](https://github.com/swiftlang/swift-driver/commit/b86325a9)）。
 - 后续增加相对路径、递归检测和临时文件原子写入（[相对路径](https://github.com/swiftlang/swift-driver/commit/df0e9e19)、[原子写入](https://github.com/swiftlang/swift-driver/commit/6f5e8fed)）。
 - Windows 使用 CRT 规则；macOS/Linux 使用 LLVM GNU 规则。Windows 调用 `clang.exe` 时会显式传入 `--rsp-quoting=windows`（[Windows 支持](https://github.com/swiftlang/swift-driver/commit/402b22a9)、[Windows quoting](https://github.com/swiftlang/swift-driver/commit/1bd69775)）。
-- 当前 Swift Driver 根据命令行长度和目标工具能力决定是否生成临时 rsp；`-filelist` 继续专门用于输入文件清单。
+- 当前 Swift Driver 根据命令行长度和目标工具能力决定是否生成临时 rsp；`-filelist` 专门用于输入文件清单， 该文件作为xcode 的编译中间产物存在， 可以使用 swift-fronted --help查看。
+类似的，是否仓颉可以不将@ 作为repsonse file标识，新增加一个 --response-file-path 编译选项用于传递response file ， 这样并没有兼容性的影响。
 
 Swift 的规则基本没有改，主要变化是何时生成 rsp，以及哪些任务允许使用 rsp。源码见 [Driver.swift](https://github.com/swiftlang/swift-driver/blob/main/Sources/SwiftDriver/Driver/Driver.swift) 和 [ArgsResolver.swift](https://github.com/swiftlang/swift-driver/blob/main/Sources/SwiftDriver/Execution/ArgsResolver.swift)。
 
@@ -424,7 +441,22 @@ Go 的变化发生在文件格式本身：从内部逐行格式逐步转向外�
 
 ### B.3.4 CMake 与 Ninja
 
-CMake 根据编译器和平台生成 `rspfile`、`rspfile_content` 规则；Ninja 在执行命令前写入 rsp，命令成功后删除。文件采用哪套引号和转义规则，由 CMake 中对应的工具链配置决定，而不是由 Ninja 固定。
+CMake 负责决定哪些命令使用 rsp，并在构建脚本中生成 `rspfile`（rsp 文件路径）和
+`rspfile_content`（rsp 文件内容）[两条规则](https://ninja-build.org/manual.html)。设置 `CMAKE_NINJA_FORCE_RESPONSE_FILE=ON`
+可强制所有命令使用 rsp；不设置时，Windows 上链接参数过长也会自动改用 rsp，
+Linux/macOS 上默认不使用。命令参数的书写格式：Linux、macOS 使用上文提到的
+GNU/GCC 格式，Windows 使用 MSVC/CRT 格式。Ninja 本身不解析 rsp 内容，只在执行
+命令前把内容原样写入 rsp 文件，命令成功后删除，失败时保留以便排查。
+例如 cmake生成的rsp 格式文件可能为：
+```
+ cat cmake_link.rsp 
+CMakeFiles/rspdemo3.dir/src/main.c.o
+CMakeFiles/rspdemo3.dir/src/foo.c.o
+CMakeFiles/rspdemo3.dir/src/bar.c.o
+CMakeFiles/rspdemo3.dir/src/baz.c.o -L/tmp/opencode/rspdemo3/third_party/foo/lib   -L/tmp/opencode/rspdemo3/third_party/bar/lib   
+-L/usr/local/lib -Wl,-rpath,/tmp/opencode/rspdemo3/third_party/foo/lib:/tmp/opencode/rspdemo3/third_party/bar/lib:/usr/local/lib  -lm  -lpthread  -ldl
+```
+
 
 # **附录 c:评审范围**
 
