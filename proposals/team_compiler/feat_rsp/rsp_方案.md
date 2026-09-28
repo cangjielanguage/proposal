@@ -1,5 +1,10 @@
 # Response File 特性设计
 
+- CJEEP-0009
+- Author(s) jinbohang  liujiajie wangyang
+- Statuss: Reviewing
+- IMplementation: https://gitcode.com/Cangjie/cangjie_compiler/pull/2161
+
 # **1、特性需求/问题/动机的来源与价值**
 
 ## 1.1 背景与目标
@@ -71,16 +76,33 @@ https://gcc.gnu.org/wiki/Response_Files
 # **2、业界竞品分析**
 
 ## 2.1 业界产品支持情况
-目前调研了下列工具，全部都支持response file机制，均支持 @xx.file 作为response file
-| 工具 | 用户手册 |
+目前调研了下列工具，c++, rust，go,swift, kotlin,java, c#/vb都支持response file机制，均支持 @xx.file 作为response file, 而像是解释类型的语言一般并不支持。
+| 编译器/语言 | 用户手册 |
 | --- | --- |
 | GCC | <https://gcc.gnu.org/onlinedocs/gcc/Overall-Options.html> | libiberty `argv.c` 的 `expandargv` |
-| GNU ld | <https://sourceware.org/binutils/docs/ld/Options.html> | binutils `ld/`(与 libiberty 同源) |
-| clang / lld | 无专门手册页 | `llvm/lib/Support/CommandLine.cpp`(`ExpansionContext::expandResponseFiles`)+ `lld/Common/Args.cpp` |
-| MSVC `link.exe` | <https://learn.microsoft.com/en-us/cpp/build/reference/at-specify-a-linker-response-file> | 闭源,以文档为准 |
+| clang | 无专门手册页 | `llvm/lib/Support/CommandLine.cpp`(`ExpansionContext::expandResponseFiles`)+ `lld/Common/Args.cpp` |
 | Rust `rustc` | [`@path` 参数文件](https://doc.rust-lang.org/rustc/command-line-arguments.html#path-load-command-line-flags-from-a-path) | [`rustc_driver_impl/src/args.rs`](https://github.com/rust-lang/rust/blob/master/compiler/rustc_driver_impl/src/args.rs)；稳定化 Issue [#63576](https://github.com/rust-lang/rust/issues/63576) / Commit [446a43d](https://github.com/rust-lang/rust/commit/446a43da0ee23b3a69e214f030d6d7dada345296) |
 | Swift  | [Swift Driver 仓库](https://github.com/swiftlang/swift-driver)；`swiftc` 用户手册未单独定义统一 rsp 语法 | [`Driver.swift`](https://github.com/swiftlang/swift-driver/blob/main/Sources/SwiftDriver/Driver/Driver.swift)、[`ArgsResolver.swift`](https://github.com/swiftlang/swift-driver/blob/main/Sources/SwiftDriver/Execution/ArgsResolver.swift)；演进提交见 [response-file 初始支持](https://github.com/swiftlang/swift-driver/commit/b86325a9)、[Windows 支持](https://github.com/swiftlang/swift-driver/commit/402b22a9) |
 | Go  | 无稳定用户文档；主要通过 Issue/CL 演进 | 初始支持 [Issue #18468](https://github.com/golang/go/issues/18468)/[CL 110395](https://go-review.googlesource.com/c/go/+/110395)；转义补丁 [Issue #42295](https://github.com/golang/go/issues/42295)/[CL 272870](https://go-review.googlesource.com/c/go/+/272870)；GCC 兼容 [Issue #77177](https://github.com/golang/go/issues/77177)/[CL 737500](https://go-review.googlesource.com/c/go/+/737500) |
+|kotlin| 无专门手册页 |
+|javac | https://docs.oracle.com/en/java/javase/21/docs/specs/man/javac.html#command-line-argument-files
+|java 启动器（JVM启动进程） | https://docs.oracle.com/en/java/javase/21/docs/specs/man/java.html#java-command-line-argument-files  ，较为细致含有示例
+|python | argparse ， 标准库内支持 |
+|c#\visual Basic |  未找到用户手册 ，但含有其他博客的介绍https://www.cnblogs.com/lastbeachhead/archive/2009/06/06/1497763.html
+|R| 不支持|
+|Ruby|不支持|
+|PHP|不支持|
+|TypeScript|不支持 https://github.com/Microsoft/TypeScript/issues/14775| 
+|javascript|不支持|
+|classic visual Basic|不支持|
+
+
+| 链接器 | 用户手册 |
+| --- | --- |
+| GNU ld | <https://sourceware.org/binutils/docs/ld/Options.html> | binutils `ld/`(与 libiberty 同源) |
+| lld | 无专门手册页 | `llvm/lib/Support/CommandLine.cpp` |
+| MSVC `link.exe` | <https://learn.microsoft.com/en-us/cpp/build/reference/at-specify-a-linker-response-file> | 闭源,以文档为准 |
+
 具体字符行为及实验数据见附录 B。
 
 ## 2.2 rsp文件生成时机
@@ -112,13 +134,20 @@ https://gcc.gnu.org/wiki/Response_Files
 其中LLVM gnu跟gcc的规则基本一致，主要是空串的行为有所差异， gcc会保留空串 ，但LLVM gnu则会忽略。（另外不同版本的Gcc转义的情况有所不同）具体可见B.1 汇总。
 
 
-## 2.4 业界产品主要演进过程
+
+## 2.4 业界产品现状
 
 （1）rust 2019年支持rsp文件并合入main分支， 2023年解决ninja 输入的文件的不兼容问题，引入了 `-Zshell-argfiles`以支持 shell语法（并非严格 GNU/GCC 兼容的格式）。该特性以实验特性开放。
 
 （2）go 语言为解决 windows 32kb 限制开始支持，格式为一行一个参数，后续为为保留参数中的反斜杠和换行开始引入转义，于2026年为兼容 Bazel/Buck 等构建系统生成的标准 rsp，改用GNU/GCC方式。
 
 （3）swift则较为稳定，mac/linux上使用 llvm Gnu方式，而windows 上使用MSVC/CRT方式。
+
+（4）kotlin则为改进llvm gnu的方法， 转义仅在"" 启用
+
+（5）Python的 argparse 标准库内支持rsp能力，一行一参数（rust风格） 
+
+（6）javac （java的编译器）规则也比较简单，为空白分割参数，双引号包空格，不支持转义(无法输入" )。java启动器则为GCC 风格做了拓展， 支持注释，详细见https://docs.oracle.com/en/java/javase/21/docs/specs/man/java.html#java-command-line-argument-files。
 
 三种现代工具链的演进详细过程见附录 B.3。
 
@@ -147,7 +176,7 @@ cjpm / CMake
 
 ## 3.2 rsp文件规则
 
-参照第二章业界情况，类似于rust一行一参数的情况兼容性不好，可以参考go rust都处于演进过程 ，特别是go 已经取消了一行一参数的设计；而为了方便windows 用户不想使用gcc 这种全平台一致的方式，目前想参考 swift实现或者基于swift实现一个仓颉特有跨平台。该文件目前仅支持 UTF-8编码（当前主流编码）。
+参照第二章业界情况，类似于rust一行一参数的情况兼容性不好，可以参考go rust都处于演进过程 ，特别是go 已经取消了一行一参数的设计；而为了方便windows 用户不想使用gcc 这种全平台一致的方式，目前想参考 swift实现或者参考kotlin方式该文件目前仅支持 UTF-8编码（当前主流编码）。
 
 详细字符规则、示例和逐项比较见附录 A0。
 ### 3.2.1 分平台
@@ -163,7 +192,7 @@ cjpm / CMake
 | `pre"a b"post` | `prea bpost`(一个参数) | `prea bpost`(一个参数) |
 
 ### 3.2.2 平台统一
-基于LLVM GNU 进行定制化，主要修改点将无引号 \ 改为字面字符，尽在"" 内部支持转义。使 Windows 路径可直接书写。举个例子：
+参考kotlin 方式，基于LLVM GNU 进行定制化，主要修改点将无引号 \ 改为字面字符，尽在"" 内部支持转义。使 Windows 路径可直接书写。举个例子：
 
 | rsp 内容 | 解析结果 |
 | --- | --- |
@@ -231,7 +260,7 @@ windows 采取如下规则：
 | `#`、`$`、glob | 普通字符，不执行注释或展开 | `#` → 普通参数 |
 
 
-## A0.2： 3.3.2 跨平台 LLVM GNU + Windows 裸路径扩展
+## A0.2： 3.3.2 跨平台 （kotlin）
 
 本方案以 LLVM GNU 为基线，仅修改**无引号反斜杠**的处理：LLVM GNU 中无引号 `\X` 会消费反斜杠并保留 `X`；本方案改为原样保留 `\X`。其他空白分隔、单双引号、引号拼接等规则保持 LLVM GNU 语义。
 
