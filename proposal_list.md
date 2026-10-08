@@ -1,3 +1,9 @@
 | Title | CJEEP Number | Author(s) | Corresponding Team | (Original) Issue | Status | Schedule Time | (Latest) Proposal | Decisions |
 |-------|--------------|-----------|--------------------|-------------------|--------|---------------|-------------------|-----------|
-|       |              |           |                    |                   |        |               |                   |           |
+|   CString 空字节检查    |    CJEEP-0001      |     熊洲      |           interop        |         /          |    Accepted    |                 |                   |           |
+|   stdx.aspect_cj 切点通配符与切点参数实参设计    |    CJEEP-0002     |     ShenZi      |           compiler        |         /          |    Accepted    |       无需评审          |                   |           |
+|   cjpm.lock 增加 SWBOM 所需依赖信息    |    CJEEP-0003     |     Sun Chihao      |           std       |         /          |    Reviewing   |       2026.10.9-14:15         |                   |           |
+|   cjpm.lock 增加 SWBOM 所需依赖信息    |    CJEEP-0003     |     Sun Chihao      |           std       |         /          |    Reviewing   |       2026.10.9-14:15         |                   |           |
+|   标准库适配 local mode 整体策略及部分接口适配方案    |    CJEEP-0004     |     Zha Junpeng      |           std       |         /          |    Reviewing   |       2026.10.9-14:15         |                   |           |
+|   标准库适配 local mode 策略问题闭环    |    CJEEP-0005     |     Zha Junpeng, Yujiahao, Chen Qian      |      std       |         /          |    Reviewing   |       2026.10.9-14:15         |                   |           |
+|   【兼容性影响评审】异常信息整改对 ABI 兼容性及应用行为的影响    |    CJEEP-0008     |     虞嘉豪      |      std       |         /          |    Accepted   |              |                   |           |
