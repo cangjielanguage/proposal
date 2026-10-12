@@ -93,7 +93,7 @@ extend<T> Array<T> where T <: Copyable {
  // 注意：intrinsicBuiltInCopyTo 的 src 参数不支持 @local?，
  //  改用 arrayGetUnchecked + arraySetUnchecked 逐元素复制
  @Frozen
- public operator func [](this @local?, range: Range<Int64> @local?, value!: Array<T> @local?): Unit
+ public operator func [](this @local?, range: Range<Int64>, value!: Array<T> @local?): Unit
 
  // ============== fill — 填充 ==============
  // T 是 Copyable，value 不需 local 标注
@@ -207,7 +207,7 @@ public struct Array<T> {
  // 新增: @local! 版本
  @Frozen
  @OverflowWrapping
- public func clone(this @local!, range: Range<Int64> @ local?): Array<T> @local!
+ public func clone(this @local!, range: Range<Int64>): Array<T> @local!
 
  // ---- copyTo(dst, ...) ----
  // 新增: @local! 版本（src @local! → dst @local!）
@@ -336,11 +336,11 @@ public struct Array<T> {
  // ---- [](range) — 获取内部数据（slice） ----
  // 新增: @local! 版本
  @Frozen
- public operator func [](this @local!, range: Range<Int64> @local?): Array<T> @local!
+ public operator func [](this @local!, range: Range<Int64>): Array<T> @local!
 
  // 新增: @local! 版本
  @Frozen
- public operator func [](this @local?, range: Range<Int64> @local?): Array<T> @local?
+ public operator func [](this @local?, range: Range<Int64>): Array<T> @local?
 
  // --- 返回 Copyable 类型，只适配 @local? 版本 ---
  @Frozen
@@ -374,7 +374,7 @@ public struct Array<T> {
  // ---- [](range, value!) — 设置 ----
  // 新增: @local! 版本（value 作为输入数据存入 @local! rawptr）
  @Frozen
- public operator func [](this @local!, range: Range<Int64> @local?, value!: Array<T> @local!): Unit
+ public operator func [](this @local!, range: Range<Int64>, value!: Array<T> @local!): Unit
 
  // ---- fill — 设置内部成员 ----
  // 新增: @local! 版本（value 存为成员，需 @local!）
@@ -650,11 +650,11 @@ public struct String <: Collection<Byte> & Comparable<String> & Hashable & ToStr
  
  // 新增：@local! 版本的 slice（获取内部数据/数据转换）
  @Frozen
- public operator const func [](this @local!, range: Range<Int64> @ local?): String @local!
+ public operator const func [](this @local!, range: Range<Int64>): String @local!
 
  // 新增：@local! 版本的 slice（获取内部数据/数据转换）
  @Frozen
- public operator const func [](this @local?, range: Range<Int64> @ local?): String @local?
+ public operator const func [](this @local?, range: Range<Int64>): String @local?
  
  // 新增：@local! 版本的 iterator
  @Frozen
@@ -835,7 +835,7 @@ public class ArrayList<T> <: List<T> {
  public func remove(this @local!, at!: Int64): T @local!
  
  @Frozen
- public func remove(this @local!, range: Range<Int64> @ local?): Unit
+ public func remove(this @local!, range: Range<Int64>): Unit
  
  @Frozen
  public func removeIf(this @local!, predicate: ((T @local!) -> Bool) @local?): Unit
@@ -862,20 +862,20 @@ public class ArrayList<T> <: List<T> {
  public func iterator(this @local!): Iterator<T> @local!
  
  @Frozen
- public func slice(this @local!, range: Range<Int64> @local?): ArrayList<T> @local!
+ public func slice(this @local!, range: Range<Int64>): ArrayList<T> @local!
  
  @Frozen
- public operator func [](this @local!, range: Range<Int64> @local?): ArrayList<T> @local!
+ public operator func [](this @local!, range: Range<Int64>): ArrayList<T> @local!
 
  // 新增：@local? 版本
  @Frozen
  public func iterator(this @local?): Iterator<T> @local?
  
  @Frozen
- public func slice(this @local?, range: Range<Int64> @local?): ArrayList<T> @local?
+ public func slice(this @local?, range: Range<Int64>): ArrayList<T> @local?
  
  @Frozen
- public operator func [](this @local?, range: Range<Int64> @local?): ArrayList<T> @local?
+ public operator func [](this @local?, range: Range<Int64>): ArrayList<T> @local?
  
  // 原方法保持不变
  // ... 其他原数据转换方法保持不变
