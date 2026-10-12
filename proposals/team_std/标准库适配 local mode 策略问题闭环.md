@@ -986,15 +986,8 @@ public class HashMap<K, V> <: Map<K, V> where K <: Hashable & Equatable<K> {
  @Frozen
  public init(this @local!, size: Int64, initElement: (Int64) -> (K, V) @local!)
 
- // 宽门：元素不保证可复制，必须提供；禁止 this @local! 配 @local? 来源（承诺撒谎）
- @Frozen
- public init(this @local?, elements: Array<(K, V)> @local?)
-
  @Frozen
  public init(this @local?, elements: Collection<(K, V)> @local?)
-
- @Frozen
- public init(this @local?, size: Int64, initElement: (Int64) -> (K, V) @local?)
 
  // ==================== 设置内部成员（只读 key 放宽）====================
  @Frozen
@@ -1076,13 +1069,7 @@ public class HashMap<K, V> <: Map<K, V> where K <: Hashable & Equatable<K> {
  public func toArray(this @local!): Array<(K, V)> @local!
 
  @Frozen
- public func toArray(this @local?): Array<(K, V)> @local?
-
- @Frozen
  public func clone(this @local!): HashMap<K, V> @local!
-
- @Frozen
- public func clone(this @local?): HashMap<K, V> @local?
 
  // 格式化生成全新字节，不共享 → 单版本
  @Frozen
