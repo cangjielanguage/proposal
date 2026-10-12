@@ -949,8 +949,8 @@ public interface Map<K, V> <: ReadOnlyMap<K, V> {
  func values(this @local!): Collection<V> @local!
  func values(this @local?): Collection<V> @local?
  // 新增：条目视图（双版本）
- func entryView(this @local!, k: K @local?): MapEntryView<K, V> @local!
- func entryView(this @local?, k: K @local?): MapEntryView<K, V> @local?
+ func entryView(this @local!, k: K @local!): MapEntryView<K, V> @local!
+ func entryView(this @local?, k: K @local!): MapEntryView<K, V> @local?
 }
 
 public interface MapEntryView<K, V> {
