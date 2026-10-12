@@ -46,7 +46,7 @@
 
 |序号|遗留问题|闭环情况|
 |:---|:---|:---|
-|1|适配是在原有类型上扩展，还是新增类型|新增类型的话 `@~local` 和 `@local!` 实例之间就比较分裂<br> `@local?` 的价值就不大了|
+|1|适配是在原有类型上扩展，还是新增类型|在原有类型上扩展<br>新增类型的话 `@~local` 和 `@local!` 实例之间就比较分裂<br> `@local?` 的价值就不大了|
 |2|需不需要增加 `extend<T> Array<T> where T <: Copyable`<br> 为部分类型的 `@local?` 提供 `set` 方法 |同意新增|
 |3|直接在已有方法 `this` 上增加 `@local?` 是否 ABI 兼容 |明确不兼容|
 |4|`@local?`的构造函数是否需要全适配？建议按需适配|已改为按需适配（详细判定原则见 3.1 中的**构造函数适配策略**）|
@@ -56,8 +56,8 @@
 |1|例如`Array`的`concat`、`splitAt`、`clone`等方法会创建新的实例<br> 适配策略参考构造函数，`@local?`的场景按需适配 |优先只提供 `@local!` 版本的适配|
 |2|`String`提供 `@local!`、`@local?` 和 `@~local` 之间的转换方法 |新增 `String` 的构造函数实现三者的互转 <br> 详见 3.4.2 说明|
 |3|`toString` 方法 `this` 使用 `@local?` 修饰 |已修改，删除 `func toString(this @local!): String @local!`|
-|4|local mode 适配方法的默认实现抛 `UnImplementedException` |标准库新增`UnImplementedException`|
-|5|`String` 的 `get` 和 `[]` 方法没必要提供 `@local!` 的版本 |只提供`@local?`版本的适配，判定标准：**返回值是否是 Copyable 的，或类成员全是 Copyable 的**。<br> `get`/`[]` 返回 `Option<Byte>`/`Byte`，内容纯 Copyable，`@local?` 版本以 `@~local` 交付的结果对三种接收者完全等价，`@local!` 版本冗余，已删除；<br> 切片 `[](range)` 返回 `String`（非 Copyable，结果共享底层存储、模式随接收者），模式有信息量，`@local!`/`@local?` 两个版本保留；<br> 按同一标准修正：`indexOf` 返回 `Option<Int64>`（内容同为纯 Copyable），其 `@local!` 版本一并删除、只保留 `@local?` 版本，与 `Array` 的 `indexOf` 处理对齐|
+|4|local mode 适配方法的默认实现抛 `UnimplementedException` |标准库新增`UnimplementedException`|
+|5|`String` 的 `get` 和 `[]` 方法没必要提供 `@local!` 的版本 |根据返回的类成员**是否是 Copyable 的**来决定。<br> `get`/`[]` 返回 `Option<Byte>`/`Byte`，内容纯 Copyable，`@local?` 版本以 `@~local` 交付的结果对三种接收者完全等价，`@local!` 版本冗余，已删除；<br> 切片 `[](range)` 返回 `String`，和原`String`共享底层存储`RawArray`，`@local!`/`@local?` 两个版本保留；<br> 按同一标准修正：`indexOf` 返回 `Option<Int64>`（内容同为纯 Copyable），其 `@local!` 版本一并删除、只保留 `@local?` 版本，与 `Array` 的 `indexOf` 处理对齐|
 |6|`String` 类型方法中带默认值的参数，统一是 `@~local` 类型 | 当时统一成 `@~local` 是因为当时默认参数还不支持带 local mode 标注，但现在 Spec 改了默认值可以带 local mode 标记<br> 我们根据实际方法使用场景和语义决定默认值的local mode。<br> 对于 `String` 这几个场景，默认值可以是 `@~local`。|
 
 ### 3.1、整体适配策略中新增一条构造函数的适配策略
@@ -67,9 +67,9 @@
 | 方法类型 | 功能概述 | 示例 | 适配策略 |
 | :--- | :--- | :--- | :--- |
 | <span style="color:red">构造函数</span> | 创建对象实例 | 类的 `init` 方法<br> `toArray`、`clone` 等方法 | 优先适配 `@local!` <br> 按需适配 `@local?` |
-| 获取内部数据 | 返回获取的类的成员数据 | `ArrayList` 的 `get` 方法<br> `HashMap` 的 `get` 方法<br> 迭代器 `Iterator` 和 `Iterable` | 适配 `@local!` 和 `@local?` 两个版本 |
+| 获取内部数据 | 返回获取的类的成员数据 | `ArrayList` 的 `get` 方法<br> `HashMap` 的 `get` 方法<br> 迭代器 `Iterator` 和 `Iterable` | 通常适配 `@local!` 和 `@local?` 两个版本<br>返回类成员是 `Copyable`的场景可考虑只提供`@local?` |
 | 设置内部成员 | 使用外部数据，对类实例的内部成员做修改 | `ArrayList` 的 `set` 方法<br> `Array` 的 `fill` 方法<br> `ArrayList` 的 `reverse` 和 `sort` 方法 | 只适配 `@local!` 版本，<br> 成员是 `Copyable` 的情况特殊考虑 |
-| 判定/计数 | 对象间比较，查询类实例的状态 | `compare` 方法<br> `ArrayList` 的 `isEmpty` 方法<br> `HashMap` 的 `contains` 方法 | 优先适配 `@local?`，<br> 根据特殊情况适配 `@local!` |
+| 判定/计数 | 对象间比较，查询类实例的状态 | `compare` 方法<br> `ArrayList` 的 `isEmpty` 方法<br> `HashMap` 的 `contains` 方法 | 优先适配 `@local?` |
 | 序列化和反序列化 | 类实例和 `String` 类型之间的互相转换 | `ToString` 接口的 `toString` 方法（序列化）<br> `Parsable` 接口（反序列化） | 序列化：入参是 `@local?` 返回 `String @local!` <br> 反序列化：入参是 `String @local?` 返回 `@local!` 实例 |
 
 **构造函数适配策略** 对于计划适配 local mode 的类型，我们一定会提供 `@local!` 的版本；`@local?` 构造函数按需适配。
