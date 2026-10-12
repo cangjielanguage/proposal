@@ -76,7 +76,7 @@
 
 注意：对于类似 `Array` 的 `clone`、`concat`、`splitAt` 等方法，或者 `String` 的 `join`、`fromUtf8` 等方法，会创建新的 `Array` 或 `String` 实例，与构造函数类似。是否适配 `@local?` 的版本策略同 `@local?` 的构造函数，按需适配。
 
-### 3.2、为 `Array` 和 `ArrayList` 类型增加泛型是 `Copyable` 基类时的扩展
+### 3.2、为 `Array` 类型增加泛型是 `Copyable` 基类时的扩展
 
 **Array**
 
@@ -123,77 +123,7 @@ extend<T> Array<T> where T <: Copyable {
 }
 ```
 
-**ArrayList**
-
-`ArrayList` 中的设置内部成员的方法继承自 `List` 接口，我们新增 `ListOfCopyable` 接口引入新增的 `@local?` 实例方法。
-
-```swift
-public interface ListOfCopyable<T> <: ReadOnlyList<T> where T <: Copyable {
- func add(this @local?, element: T): Unit
-
- func add(this @local?, all!: Collection<T> @local?): Unit
-
- func add(this @local?, element: T, at!: Int64): Unit
-
- func add(this @local?, all!: Collection<T> @local?, at!: Int64): Unit
-
- func remove(this @local?, at!: Int64): T
-
- func remove(this @local?, range: Range<Int64> @local?): Unit
-
- func removeIf(this @local?, predicate: ((T) -> Bool) @local?): Unit
-
- func clear(this @local?): Unit
-
- operator func [](this @local?, index: Int64, value!: T): Unit
-}
-```
-
-```swift
-extend<T> ArrayList<T> <: ListOfCopyable<T> where T <: Copyable {
-
- // ---- List 设置方法的 @local? 版本 ----
-
- // ---- add(element: T) ----
- public func add(this @local?, element: T): Unit
-
- // ---- add(all!: Collection<T>) ----
- public func add(this @local?, all!: Collection<T> @local?): Unit
-
- // ---- add(element: T, at!: Int64) ----
- @OverflowWrapping
- public func add(this @local?, element: T, at!: Int64): Unit
-
- // ---- add(all!: Collection<T>, at!: Int64) ----
- @OverflowWrapping
- public func add(this @local?, all!: Collection<T> @local?, at!: Int64): Unit
-
- // ---- remove(at!: Int64): T ----
- public func remove(this @local?, at!: Int64): T
-
- // ---- remove(range: Range<Int64>) ----
- public func remove(this @local?, range: Range<Int64> @local?): Unit
-
- // ---- removeIf(predicate) ----
- public func removeIf(this @local?, predicate: ((T) -> Bool) @local?): Unit
-
- // ---- clear ----
- public func clear(this @local?): Unit
-
- // ---- operator [](index, value!) ----
- public operator func [](this @local?, index: Int64, value!: T): Unit
-
- // ==================== ArrayList 特有方法（不在 List/ListOfCopyable 接口中） ====================
-
- // reverse：ArrayList 特有方法，不在 List 接口中
- @Frozen
- public func reverse(this @local?): Unit
-
- // reserve：ArrayList 特有方法，不在 List 接口中
- @Frozen
- public func reserve(this @local?, additional: Int64): Unit
-}
-```
+注意：`ArrayList<T>` 我们没有考虑其成员 `T` 是 `Copyable` 的情况，因为 `ArrayList` 不仅需要数组元素是 `Copyable` 的，还需要数组是 `Copyable` 的（因为涉及扩缩容），这样才有意义。
 
 ### 3.3、标准库 `std.core` 新增 `UnimplementedException`
 
