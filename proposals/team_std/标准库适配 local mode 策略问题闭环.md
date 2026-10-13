@@ -228,13 +228,6 @@ public struct Array<T> {
  @Frozen
  public func splitAt(this @local!, mid: Int64): (Array<T>, Array<T>) @local!
 
- // 新增: @local? 版本
- // 修正：splitAt 返回的两个子数组同样是共享底层 RawArray 的视图（stdlib 实现为
- // Array(this.rawptr, this.start, mid) 与 Array(this.rawptr, this.start + mid, ...)），
- // 结果模式被接收者锁死，且视图无法由任何构造函数替代——必须提供 @local? 版本
- @Frozen
- public func splitAt(this @local?, mid: Int64): (Array<T>, Array<T>) @local?
-
  // ---- repeat ----
  // 新增: @local! 版本
  @Frozen
@@ -415,8 +408,14 @@ public struct Array<T> {
 
  // ---- fold / reduce — 数据转换 ----
  @When[env != "ohos"]
- public func fold<R>(this @local!, initial: R @ local!, operation: ((R, T) @ local! -> R @ local!) @local?): R @local!
+ public func fold<R>(this @local!, initial: R @ local!, operation: ((R @ local!, T @ local!) -> R @ local!) @local?): R @local!
 }
+```
+
+**注意：** `Range` 类型因为主要以 `Range<IntXX>` 的形式使用，其成员是 `Copyable` 的，因此不为其适配 local 模式。但我们扩展 `Range` 实现 `Copyable` 接口。
+
+```swift
+extend<T> Range<T> <: Copyable where T <: Copyable {}
 ```
 
 #### 3.4.2、`String`
@@ -488,7 +487,7 @@ public struct String <: Collection<Byte> & Comparable<String> & Hashable & ToStr
  
  // 新增：@local! 版本的 replace
  @Frozen
- public func replace(this @local!, old: String @local!, new: String @local?): String @local!
+ public func replace(this @local!, old: String @local?, new: String @local?): String @local!
  
  // 新增：@local! 版本的 toAsciiLower
  @Frozen
@@ -541,15 +540,15 @@ public struct String <: Collection<Byte> & Comparable<String> & Hashable & ToStr
  
  // 新增：@local! 版本的 padStart/padEnd
  @Frozen
- public func padStart(this @local!, totalWidth: Int64, padding!: String = " "): String @local!
+ public func padStart(this @local!, totalWidth: Int64, padding!: String @local? = " "): String @local!
  
  @Frozen
- public func padEnd(this @local!, totalWidth: Int64, padding!: String = " "): String @local!
+ public func padEnd(this @local!, totalWidth: Int64, padding!: String @local? = " "): String @local!
  
  // 新增：@local! 版本的 static join
  @Frozen
  @OverflowWrapping
- public static func join(strArray: Array<String> @local!, delimiter!: String): String @local!
+ public static func join(strArray: Array<String> @local!, delimiter!: String @local?): String @local!
 
  // 数据转换类
  @Frozen
