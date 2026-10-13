@@ -1,6 +1,6 @@
 # VSCode 插件 SDK 路径工作区占位符支持
 
-* CJEEP ID：由 PMC System Designer 分配
+* CJEEP ID：CJEEP-0005
 * Author(s)：candy
 * Status：Reviewing
 * Implementation：UnImplemented
@@ -159,7 +159,7 @@ The Cangjie SDK path has not been configured properly. Please configure it first
 
 本提案选择在 LSP、DAP、Tools 的 SDK 设置读取边界解析 `${workspaceFolder}` 和 `${workspace}`，沿用第一个工作区目录规则，不修改用户配置，不改变普通绝对路径行为。该方案改动局部、兼容性风险低，并可通过纯函数契约测试、DAP 集成测试和插件构建验证。
 
-当前状态为 Reviewing。遗留事项为 PMC System Designer 分配 CJEEP ID，并由 IDE Team 完成方案评审。
+本提案编号为 CJEEP-0005，当前状态为 Reviewing，待 IDE Team 完成方案评审。
 
 # 附录
 
