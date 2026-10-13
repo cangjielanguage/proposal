@@ -37,69 +37,76 @@ flowchart TD
     IntrinsicEnum --> Runtime[Runtime TypeInfo Metadata]
 ```
 
-本特性位于标准库 `std.reflect` 包，依赖运行时 TypeInfo 元数据和反射 intrinsic。
+本特性位于标准库 `std.reflect` 包，**不要求仓颉运行时为 `Option` 增加专用标记、分支或新 ABI**。实现只使用运行时已经提供的通用 Enum TypeInfo 能力，在标准库侧识别并封装 Option。
 
 涉及模块：
 
 - 标准库反射模块：`stdlib/libs/std/reflect`
-- 运行时反射符号导出：`runtime/src/CommonAlias.h`
-- 运行时 TypeInfo 能力：`runtime/src/TypeInfoManager.*` 及已有 metadata 能力
+- 标准库已有的 Enum TypeInfo / intrinsic 封装
 - 文档与测试：`stdlib/doc/libs/std/reflect`、反射相关 DT/单测
 
 关键文件：
 
 - `stdlib/libs/std/reflect/type_info_cjnative.cj`
 - `stdlib/libs/std/reflect/option_type_info_cjnative.cj`
-- `stdlib/libs/std/reflect/intrinsic_cjnative.cj`
-- `runtime/src/CommonAlias.h`
+- `stdlib/libs/std/reflect/intrinsic_cjnative.cj`（仅复用已有 Enum TypeInfo 能力，不新增 runtime intrinsic）
+
+不修改 `runtime/src/TypeInfoManager.*`、`runtime/src/CommonAlias.h`，也不新增 Option 专用运行时元数据或 C ABI 符号。
+
+### 实现边界
+
+- 运行时只需按现有机制提供 Enum 的限定名、类型参数、构造器、构造器关联值等通用信息。
+- Option 的识别、类型封装和语义化 API 全部在 `std.reflect` 中完成。
+- 若运行时返回的 Enum 元信息不满足 Option 识别规则，标准库应将其视为普通 `EnumTypeInfo`，不得依赖未定义的运行时行为。
 
 ### 环境依赖
 
-- 多 target：涉及标准库 cjnative 反射能力。
-- 多后端：当前实现通过 `@When[env != "ohos"]` 开启，OHOS 环境暂不启用该能力。
-- 多 OS：Linux/macOS/Windows 理论上依赖同一 runtime metadata 能力；需通过现有 CI target 验证。
-- 后端必须提供 `getTypeArgs`、enum 构造和关联值读取所需 intrinsic；否则不可直接开放 API。
+- 多 target：依赖标准库现有 cjnative 反射能力。
+- 多 OS：Linux/macOS/Windows 复用同一套 Enum TypeInfo 能力。
+- 是否可用只取决于目标环境是否已有通用 Enum 反射能力，不取决于是否实现 Option 专用 runtime 支持。
 
 ### 依赖关系与关键约束
 
 OptionTypeInfo 依赖：
 
 - `EnumTypeInfo`
-- `getTypeArgs`
+- 现有的类型参数查询能力
 - `EnumTypeInfo.getConstructor`
-- `EnumTypeInfo.destruct`
+- `EnumTypeInfo.destruct` 或等价的关联值读取能力
 
 关键约束：
 
-- `Option<T>` 在 runtime 表示上属于 enum metadata，因此 `OptionTypeInfo` 设计为继承 `EnumTypeInfo`，保留 enum 反射能力。
-- 动态构造时必须校验参数类型，避免 runtime 构造非法对象。
-- `Option<T>` 的公开 API 不应暴露 `Some`/`None` 底层构造器布局作为唯一使用方式。
+- `Option<T>` 在运行时按普通 Enum 提供元信息；运行时不需要知道 `Option` 是特殊类型。
+- 标准库通过稳定的限定名、构造器名称/形状和类型参数信息识别 Option，识别规则必须集中在 `std.reflect` 内。
+- 动态构造时必须校验目标 Enum、构造器和参数类型，避免构造非法对象。
+- `OptionTypeInfo` 只封装已有 Enum 能力，不改变 Option 的底层布局。
+- 若识别所需信息缺失或形状不符合约定，应抛出明确的反射异常，不能猜测或调用不存在的 runtime 能力。
 
 ### 前后版本兼容性
 
 API 兼容性：
 
 - 新增 `OptionTypeInfo`，属于增量 API。
-- `TypeInfo.of/get/getOrCreate` 对 Option 返回更具体的子类型，符合既有 `TypeInfo` 抽象，不破坏已有调用。
-- 此前 Option 可能被识别为 `EnumTypeInfo`，新增后会识别为 `OptionTypeInfo <: EnumTypeInfo`；对依赖 `EnumTypeInfo` 的旧代码仍兼容。
+- `TypeInfo.of/get/getOrCreate` 对符合识别规则的 Option 返回更具体的子类型，符合既有 `TypeInfo` 抽象，不破坏已有调用。
+- 其他 Enum 仍返回 `EnumTypeInfo`；不需要修改 runtime 对 Enum 的既有行为。
 
 ABI 兼容性：
 
-- 标准库新增公开类型和方法，需确认 ABI 版本策略。
-- 运行时导出符号若已存在，仅是标准库接入，无 ABI 破坏。
-- 若新增 runtime C ABI 导出符号，需要按 runtime ABI 规范评估符号稳定性。
+- 仅新增标准库公开类型和方法，按标准库 ABI 版本策略评估。
+- 不新增 runtime C ABI 导出符号，不引入 Option 专用 ABI 兼容性问题。
 
 外部用户感知：
 
 - 用户可感知，属于 `std.reflect` 能力增强。
-- 可能影响用户对 `TypeInfo.of<Option<T>>()` 返回类型的运行时类型判断结果，但因 `OptionTypeInfo` 继承 `EnumTypeInfo`，影响可控。
+- 对已有 Enum 反射调用保持兼容；只有符合标准库识别规则的 Option 类型会返回 `OptionTypeInfo`。
 
 ### 性能影响
 
-- `OptionTypeInfo.valueType` 首次查询为 O(1)，后续缓存后为 O(1)。
-- `OptionTypeInfo.constructSome/getValue` 为 O(1)，底层 enum 构造/析构成本为常数或与关联值数量相关。
-- `OptionTypeInfo` 缓存 `_valueType`，单实例空间复杂度为 O(1)。
-- `TypeInfo` 复用既有 CACHE，新增类型只增加少量条目。
+- Option 识别只读取已有 Enum 元信息，复杂度为 O(构造器数量 + 类型参数数量)。
+- `OptionTypeInfo.valueType` 首次查询解析并缓存类型参数，后续为 O(1)。
+- `constructSome/getValue` 复用 Enum 构造和关联值读取能力，复杂度与关联值数量相关。
+- 不增加 runtime 元数据字段；标准库仅增加少量 `TypeInfo` 缓存对象。
+
 
 ## 3、业界竞品分析
 
@@ -134,16 +141,29 @@ Rust 标准库没有通用运行时反射。`Option<T>` 主要通过编译期类
 
 ```mermaid
 flowchart TD
-    A[TypeInfo.of/get] --> B[获取 runtime TypeInfo 指针]
-    B --> C{类型分类}
-    C -->|isPrimitive| D[PrimitiveTypeInfo]
-    C -->|isClass| E[ClassTypeInfo]
-    C -->|isStruct| F[StructTypeInfo]
-    C -->|isEnum && Option name| G[OptionTypeInfo]
-    C -->|isEnum| H[EnumTypeInfo]
-    C -->|isFunction| I[FunctionTypeInfo]
-    C -->|unsupported| J[ReflectException]
+    A[TypeInfo.of/get] --> B[获取已有 Enum TypeInfo]
+    B --> C{标准库 Option 识别规则}
+    C -->|限定名和 Enum 形状匹配| D[OptionTypeInfo 封装]
+    C -->|不匹配| E[EnumTypeInfo]
+    D --> F[复用构造器/关联值/类型参数能力]
+    F --> G[Option 语义化 API]
 ```
+
+流程说明：
+
+1. `TypeInfo.of/get/getOrCreate` 通过现有反射入口取得 Enum 的通用 TypeInfo。
+2. `std.reflect` 读取 Enum 的限定名、类型参数、构造器和关联值元信息。
+3. 标准库根据集中定义的 Option 识别规则判断目标是否为 `Option<T>`；该判断不调用任何 Option 专用 runtime API。
+4. 匹配成功后创建 `OptionTypeInfo`，其操作全部委托给 `EnumTypeInfo` 已提供的能力；不匹配则保持普通 `EnumTypeInfo`。
+
+Option 识别规则：
+
+- 类型限定名必须是仓颉标准库约定的 `Option` 类型名及其泛型实例形式。
+- Enum 必须包含表示有值和无值状态的两个约定构造器：`Some` 携带一个关联值，`None` 不携带关联值。
+- `Option<T>` 必须能从现有类型参数元信息取得唯一的 `T`。
+- 任一条件不满足时不识别为 `OptionTypeInfo`，避免把普通 Enum 错误封装为 Option。
+
+上述名称和形状是标准库反射层的识别约定，不是运行时新增的 Option 标记。若未来 Option 的限定名或构造器形状变化，只需同步标准库识别规则和测试。
 
 ### OptionTypeInfo 设计
 
@@ -155,9 +175,9 @@ public class OptionTypeInfo <: EnumTypeInfo
 
 设计原因：
 
-- `Option<T>` 运行时以 enum metadata 表达。
-- 继承 `EnumTypeInfo` 可以保持原有 enum 构造器查询、析构能力。
-- 同时增加 Option 专用语义 API，降低用户对 `Some`/`None` 构造器布局的依赖。
+- `Option<T>` 在运行时没有专用标记，只以普通 Enum 的 TypeInfo 形式出现。
+- `OptionTypeInfo` 继承 `EnumTypeInfo`，直接复用 Enum 的类型参数、构造器和关联值能力。
+- Option 的识别与语义化操作由标准库完成，降低用户对 `Some`/`None` 底层布局的依赖，同时不要求 runtime 感知 Option。
 
 公开 API：
 
@@ -175,40 +195,34 @@ public func getValue(instance: Any): Option<Any>
 
 功能：
 
-- `valueType` 返回 `Option<T>` 中 `T` 的类型信息，首次查询后缓存；若 runtime type args 缺失，抛出 `InfoNotFoundException`。
-- `of` 从实例或泛型类型获取 OptionTypeInfo，`get` 从限定名获取 OptionTypeInfo；如果目标不是 Option 类型，抛出 `IllegalTypeException`。
-- `constructSome` 和 `constructNone` 构造 Some(value) 或 None；`constructSome` 校验 value 类型是否为 `valueType` 的子类型，类型不匹配时抛出 `IllegalTypeException`。
-- `isSome` 和 `isNone` 判断 Option 实例状态。
-- `getValue(Some(v))` 返回 `Option<Any>.Some(v)`，`getValue(None)` 返回 `Option<Any>.None`；若底层构造器值数量异常，抛出 `ReflectException`。
+- `valueType` 从 Enum TypeInfo 的类型参数中取得 `Option<T>` 的 `T`，首次查询后缓存；若类型参数缺失或不唯一，抛出 `InfoNotFoundException`。
+- `of` 从实例或泛型类型获取 Enum TypeInfo 后执行标准库 Option 识别；`get` 从限定名获取类型信息并执行同一识别流程；如果目标不是符合规则的 Option，抛出 `IllegalTypeException`。
+- `constructSome` 查找名为 `Some` 且具有一个关联值的 Enum 构造器，校验 value 类型后调用已有 Enum 构造能力；`constructNone` 查找名为 `None` 且无关联值的构造器。
+- `isSome` 和 `isNone` 基于实例的 Enum 构造器信息判断状态，不增加 runtime 分支。
+- `getValue(Some(v))` 通过已有 Enum 关联值读取能力返回 `Option<Any>.Some(v)`，`getValue(None)` 返回 `Option<Any>.None`；若构造器或关联值形状异常，抛出 `ReflectException`。
 
 ### 涉及源文件变更
 
 `stdlib/libs/std/reflect/type_info_cjnative.cj`
 
-- 在 `TypeInfo.getTypeInfoByPointer` 中新增 Option 类型分类：`isEnum && isOptionQualifiedName` 时创建 `OptionTypeInfo`。
-- 新增 `isOptionQualifiedName` 辅助函数，用于识别：
-  - `Option`
-  - `Option<T>`
-  - `std.core.Option`
-  - `std.core.Option<T>`
+- 在现有 Enum 分类之后调用标准库侧的 `isOptionType` 判断；匹配限定名、类型参数和 `Some`/`None` 构造器形状后创建 `OptionTypeInfo`，否则创建普通 `EnumTypeInfo`。
+- 新增/整理 `isOptionType` 辅助逻辑，集中处理限定名规范化、构造器查找和形状校验。
 
 `stdlib/libs/std/reflect/option_type_info_cjnative.cj`
 
 - 新增 `OptionTypeInfo` 类型。
-- 提供 Option value type 查询、Some/None 构造、状态判断和值提取能力。
+- 通过 `EnumTypeInfo` 已有 API 查询类型参数、定位构造器、构造实例和读取关联值。
+- 不直接调用 runtime API，也不维护与 runtime 同步的 Option 特殊状态。
 
 `stdlib/libs/std/reflect/intrinsic_cjnative.cj`
 
-- 声明/使用 Option 所需 intrinsic：
-  - `getTypeArgs`
-  - enum 构造相关 intrinsic
-  - `getAssociatedValues`
+- 仅复用已有的 Enum TypeInfo intrinsic，例如类型参数、构造器和关联值查询/构造能力。
+- 不新增 `Option` 专用 intrinsic。
 
-`runtime/src/CommonAlias.h`
+runtime：
 
-- 确认反射相关 C ABI 符号导出：
-  - `CJ_MCC_GetTypeArgs`
-  - 与 enum 构造、关联值读取相关的既有符号
+- `runtime/src/TypeInfoManager.*` 和 `runtime/src/CommonAlias.h` 无需修改。
+- 直接复用现有 Enum TypeInfo 和 ABI；不新增 Option 专用元数据字段、分类分支或 C ABI 符号。
 
 ### 方案选择
 
@@ -229,27 +243,27 @@ public func getValue(instance: Any): Option<Any>
 优点：
 
 - 实现成本低。
-- 可复用既有 enum 能力。
+- 完全复用既有 Enum 能力。
 
 缺点：
 
-- 用户仍需依赖 Some/None 构造器名和布局。
-- 不利于未来调整 Option 底层表示。
-- 与用户对 Option 空安全语义的认知不一致。
+- 用户仍需依赖 `Some`/`None` 构造器名和布局。
+- Option 语义分散在各个调用方，不利于统一的序列化、Mock 和动态调用。
 
-方案三：新增 `OptionTypeInfo`，其中 `OptionTypeInfo <: EnumTypeInfo`。
+方案三：新增 `OptionTypeInfo`，其中 `OptionTypeInfo <: EnumTypeInfo`，由标准库基于已有 Enum TypeInfo 识别并封装。
 
 优点：
 
 - 提供语义化 API。
-- 保留 enum 兼容能力。
+- 保留 Enum 兼容能力。
 - 对外 API 清晰，便于序列化、Mock、动态调用框架使用。
-- 后续可在 OptionTypeInfo 内部兼容底层表示变化。
+- 不要求 runtime 增加 Option 专用实现，底层 Enum 表示变化时可在标准库封装层适配。
 
 缺点：
 
 - 新增公开 API，需要维护文档和测试。
 - TypeInfo 类型分类逻辑增加少量复杂度。
+- 识别规则依赖 Option 的稳定限定名和构造器约定，规则变化时需要同步标准库。
 
 结论：推荐方案三。
 
@@ -258,8 +272,8 @@ public func getValue(instance: Any): Option<Any>
 ### 可维护性
 
 - `OptionTypeInfo` 独立于 `option_type_info_cjnative.cj`，避免把特化逻辑堆在 TypeInfo 主文件。
-- `TypeInfo` 仅负责分类和创建具体 TypeInfo 子类。
-- `OptionTypeInfo` 继承 `EnumTypeInfo`，复用 enum 构造器、析构能力。
+- `TypeInfo` 仅负责取得 Enum TypeInfo、执行标准库侧识别并创建具体 TypeInfo 子类。
+- `OptionTypeInfo` 继承 `EnumTypeInfo`，复用现有 Enum 类型参数、构造器和关联值能力。
 
 ### 可测试性
 
@@ -280,8 +294,8 @@ public func getValue(instance: Any): Option<Any>
 ### 兼容性
 
 - 新增 API 为增量能力。
-- `OptionTypeInfo <: EnumTypeInfo` 保持旧 enum 使用方式可继续工作。
-- OHOS 暂不启用，避免未具备 runtime 支撑的 target 出现行为不一致。
+- `OptionTypeInfo <: EnumTypeInfo` 保持旧 Enum 使用方式可继续工作。
+- runtime 无需新增 Option 标识或 ABI；不识别的 Enum 继续按既有 `EnumTypeInfo` 处理。
 
 ## 6、可信分析
 
@@ -302,8 +316,8 @@ public func getValue(instance: Any): Option<Any>
 
 可用性 Availability：
 
-- 对非 OHOS cjnative 环境开放。
-- 若 runtime 不支持对应 metadata，明确抛出异常，而不是产生未定义行为。
+- 在已有通用 Enum 反射能力的 target 上开放。
+- 若通用 Enum 元信息缺失，或目标 Enum 不满足 Option 识别规则，明确抛出反射异常或返回普通 `EnumTypeInfo`，而不是产生未定义行为。
 
 隐私 Privacy：
 
@@ -319,13 +333,15 @@ public func getValue(instance: Any): Option<Any>
 
 | 测试用例名称 | 预置条件 | 用例关键步骤 | 预期结果 |
 |---|---|---|---|
-| `reflect_option_type_of_generic` | 已启用非 OHOS cjnative 反射 | 调用 `OptionTypeInfo.of<Option<Int64>>()` | 返回 OptionTypeInfo，`valueType` 为 Int64 |
-| `reflect_option_get_by_name` | 已加载 `std.core.Option<Int64>` 类型 | 调用 `OptionTypeInfo.get("Option<Int64>")` | 返回 OptionTypeInfo |
-| `reflect_option_construct_some_success` | 获取 Option<Int64> 类型信息 | 调用 `constructSome(1)` | 返回 Some(1) |
+| `reflect_option_type_of_generic` | 已启用通用 Enum 反射 | 调用 `OptionTypeInfo.of<Option<Int64>>()` | 返回 OptionTypeInfo，`valueType` 为 Int64 |
+| `reflect_option_get_by_name` | 已加载 `std.core.Option<Int64>` 的 Enum TypeInfo | 调用 `OptionTypeInfo.get("Option<Int64>")` | 返回 OptionTypeInfo |
+| `reflect_option_recognized_from_enum_shape` | 仅提供普通 Enum TypeInfo | 检查 Option 识别过程 | 不调用 Option 专用 runtime 能力，按限定名、类型参数和构造器形状完成判断 |
+| `reflect_option_construct_some_success` | 获取 Option<Int64> 类型信息 | 调用 `constructSome(1)` | 复用 Enum 构造能力，返回 Some(1) |
 | `reflect_option_construct_some_type_mismatch` | 获取 Option<Int64> 类型信息 | 调用 `constructSome("a")` | 抛出 IllegalTypeException |
-| `reflect_option_construct_none_success` | 获取 Option<Int64> 类型信息 | 调用 `constructNone()` | 返回 None |
+| `reflect_option_construct_none_success` | 获取 Option<Int64> 类型信息 | 调用 `constructNone()` | 复用 Enum 构造能力，返回 None |
 | `reflect_option_is_some_none` | 构造 Some(1) 和 None | 分别调用 `isSome`/`isNone` | 判断结果正确 |
 | `reflect_option_get_value` | 构造 Some(1) 和 None | 调用 `getValue` | Some(1) 返回 `Option<Any>.Some(1)`，None 返回 `Option<Any>.None` |
+| `reflect_non_option_enum` | 获取具有其他限定名或构造器形状的 Enum | 调用 `TypeInfo.of` | 返回普通 EnumTypeInfo，不误判为 OptionTypeInfo |
 | `reflect_option_classification` | 调用 `TypeInfo.of<Option<Int64>>()` | 使用类型匹配判断实际子类 | 返回 OptionTypeInfo |
 
 ## 8、结论
@@ -335,8 +351,9 @@ public func getValue(instance: Any): Option<Any>
 推荐方案为：
 
 - `Option<T>` 建模为 `OptionTypeInfo <: EnumTypeInfo`。
-- TypeInfo 创建逻辑中按 runtime metadata 自动分发到 OptionTypeInfo。
-- 非 OHOS cjnative 环境先行开放，OHOS 待 runtime/intrinsic 能力具备后再启用。
+- `TypeInfo` 先取得运行时提供的普通 Enum TypeInfo，再由标准库依据限定名、类型参数以及 `Some`/`None` 构造器形状识别 Option。
+- `OptionTypeInfo` 仅复用已有 Enum 类型参数、构造器和关联值能力；不依赖 runtime 对 Option 的特别标注、分类分支、元数据字段或专用 intrinsic。
+- 不符合识别规则的类型继续作为普通 `EnumTypeInfo` 处理。
 
 评审结论建议：通过。
 
@@ -344,8 +361,8 @@ public func getValue(instance: Any): Option<Any>
 
 | 问题 | 责任人 | 预计闭环时间 |
 |---|---|---|
-| OHOS target 是否支持 Option 反射 intrinsic | runtime/后端责任人 | 后续 OHOS 反射能力规划时闭环 |
-| Option qualified name 判断是否需覆盖更多别名/规范化形式 | 标准库反射责任人 | MR 合入前确认 |
+| Option 限定名和 `Some`/`None` 构造器形状是否作为稳定标准库约定 | 标准库反射责任人 | MR 合入前确认 |
+| 现有 Enum TypeInfo 是否完整提供类型参数、构造器和关联值读取/构造能力 | 标准库与 runtime 责任人 | DT 开发前确认 |
 | 新增 API 文档与中英文文档是否同步 | 标准库文档责任人 | MR 合入前完成 |
 
 ## 附录一、可测试性设计
@@ -360,9 +377,9 @@ public func getValue(instance: Any): Option<Any>
 
 ## 附录二、评审范围判断
 
-本特性属于标准库 `std.reflect` API 设计及实现，且涉及 runtime metadata/intrinsic 交互，满足架构/功能实现评审范围：
+本特性属于标准库 `std.reflect` API 设计及实现，使用 runtime 已提供的通用 Enum TypeInfo 能力，但不要求 runtime 针对 Option 增加实现，满足架构/功能实现评审范围：
 
 - 标准库 API 设计及实现。
 - 影响反射框架对语言核心类型的处理方式。
-- 涉及标准库与 runtime 交互。
+- 复用标准库与 runtime 已有的 Enum TypeInfo 交互。
 - 对外部开发者可感知。
