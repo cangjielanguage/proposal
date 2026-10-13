@@ -1,6 +1,6 @@
 # VS Code 插件 SDK 目录支持 CANGJIE_HOME 环境变量
 
-*
+* CJEEP ID：CJEEP-0006
 * Author(s)：u010808414
 * Status：Reviewing
 * Implementation：UnImplemented
