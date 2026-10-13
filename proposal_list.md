@@ -1,3 +1,7 @@
+* 仓颉编程语言架构会议链接：[Link](https://meeting.huaweicloud.com/welink/webrtc/?lang=zh-CN#/j/97470377/0mLv2J7J9OMYPO30Ly1xdtXybfN9evzHC)
+* 会议密码：458353
+* 时间：一般每周四的下午14:15开始，实际情况看列表中议题时间
+
 | Title | CJEEP Number | Author(s) | Corresponding Team | (Original) Issue | Status | Schedule Time | (Latest) Proposal | Decisions |
 |-------|--------------|-----------|--------------------|-------------------|--------|---------------|-------------------|-----------|
 |   CString 空字节检查    |    CJEEP-0001      |     熊洲      |           interop        |         /          |    Accepted    |                 | [CString 空字节检查](https://gitcode.com/Cangjie/proposal/blob/main%2FREADME.md/proposals/team_interop/CString%E7%A9%BA%E5%AD%97%E8%8A%82%E6%A3%80%E6%9F%A5.md) |           |
