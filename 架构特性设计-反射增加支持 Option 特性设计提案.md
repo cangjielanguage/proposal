@@ -1,5 +1,10 @@
 # 反射增加支持 Option 特性设计提案
 
+* CJEEP ID：CJEEP-0011
+* Author(s)：渣渣辉Zzzh
+* Status：Reviewing
+* Implementation：https://atomgit.com/Cangjie/cangjie_runtime/pull/1638
+
 ## 1、特性需求、问题、动机与价值
 
 当前 `std.reflect` 已支持 class、struct、enum、interface、primitive、function 等类型的运行时元信息查询，但对 `Option<T>` 的专用支持不足。用户在编写通用框架、序列化/反序列化、依赖注入、测试工具、Mock 框架和动态调用工具时，无法通过反射统一处理 Option 类型。
@@ -49,6 +54,7 @@ flowchart TD
 
 - `stdlib/libs/std/reflect/type_info_cjnative.cj`
 - `stdlib/libs/std/reflect/option_type_info_cjnative.cj`
+- `stdlib/libs/std/reflect/enum_type_info_cjnative.cj`（仅将 `EnumTypeInfo` 由 `public class` 调整为 `public open class`，以支持 `OptionTypeInfo` 继承）
 - `stdlib/libs/std/reflect/intrinsic_cjnative.cj`（仅复用已有 Enum TypeInfo 能力，不新增 runtime intrinsic）
 
 不修改 `runtime/src/TypeInfoManager.*`、`runtime/src/CommonAlias.h`，也不新增 Option 专用运行时元数据或 C ABI 符号。
@@ -76,6 +82,7 @@ OptionTypeInfo 依赖：
 
 关键约束：
 
+- 继承前提：`OptionTypeInfo <: EnumTypeInfo` 要求基类可被继承，而仓颉中非抽象类必须显式使用 `open` 修饰才能被继承，因此需要将现有 `EnumTypeInfo` 由 `public class EnumTypeInfo <: TypeInfo` 调整为 `public open class EnumTypeInfo <: TypeInfo`。该调整只增加继承性修饰符，不改变成员签名、实现和实例化方式。
 - `Option<T>` 在运行时按普通 Enum 提供元信息；运行时不需要知道 `Option` 是特殊类型。
 - 标准库通过稳定的限定名、构造器名称/形状和类型参数信息识别 Option，识别规则必须集中在 `std.reflect` 内。
 - 动态构造时必须校验目标 Enum、构造器和参数类型，避免构造非法对象。
@@ -87,12 +94,14 @@ OptionTypeInfo 依赖：
 API 兼容性：
 
 - 新增 `OptionTypeInfo`，属于增量 API。
+- `EnumTypeInfo` 由 `public class` 调整为 `public open class`，属于源兼容的继承性调整：既有调用、`TypeInfo` 子类判断和直接实例化行为保持不变；同时该基类成为对外可继承类型，其公开成员构成继承契约。
 - `TypeInfo.of/get/getOrCreate` 对符合识别规则的 Option 返回更具体的子类型，符合既有 `TypeInfo` 抽象，不破坏已有调用。
 - 其他 Enum 仍返回 `EnumTypeInfo`；不需要修改 runtime 对 Enum 的既有行为。
 
 ABI 兼容性：
 
 - 仅新增标准库公开类型和方法，按标准库 ABI 版本策略评估。
+- `EnumTypeInfo` 的继承性由「不可继承」变为 `open`，属于类型元信息层面的对外可感知变更，需与标准库 ABI/版本策略一并评估；不新增导出符号，不改动既有符号签名。
 - 不新增 runtime C ABI 导出符号，不引入 Option 专用 ABI 兼容性问题。
 
 外部用户感知：
@@ -170,6 +179,8 @@ Option 识别规则：
 新增类型：
 
 ```cj
+// 基类需由 `public class` 调整为 `public open class`，否则 `OptionTypeInfo` 无法继承
+public open class EnumTypeInfo <: TypeInfo
 public class OptionTypeInfo <: EnumTypeInfo
 ```
 
@@ -177,7 +188,21 @@ public class OptionTypeInfo <: EnumTypeInfo
 
 - `Option<T>` 在运行时没有专用标记，只以普通 Enum 的 TypeInfo 形式出现。
 - `OptionTypeInfo` 继承 `EnumTypeInfo`，直接复用 Enum 的类型参数、构造器和关联值能力。
+- 继承前提：仓颉中非抽象类必须用 `open` 修饰才能被继承，因此需要把 `enum_type_info_cjnative.cj` 中的 `public class EnumTypeInfo <: TypeInfo` 调整为 `public open class EnumTypeInfo <: TypeInfo`。`OptionTypeInfo` 是 `EnumTypeInfo` 的直接子类，不满足该前提时本方案无法编译通过。
 - Option 的识别与语义化操作由标准库完成，降低用户对 `Some`/`None` 底层布局的依赖，同时不要求 runtime 感知 Option。
+
+`EnumTypeInfo` 可继承性的方案选择：
+
+- 调整为 `open class`（推荐）：满足 `OptionTypeInfo <: EnumTypeInfo` 的编译要求，且 `EnumTypeInfo` 仍可直接实例化，`TypeInfo` 的 Enum 分支继续构造普通 `EnumTypeInfo`。
+- 调整为 `abstract class`：抽象类默认可被继承，但会禁止直接实例化，与「普通 Enum 返回 `EnumTypeInfo` 实例」的既有行为冲突，排除。
+- 调整为 `sealed`：`sealed` 可限定本包内继承，但仓颉规定 `sealed` 不能用于非抽象类，排除。
+- 不继承、改为组合包装 `EnumTypeInfo`：需转发全部 Enum API，且 `TypeInfo` 的 `case oti: OptionTypeInfo` 分类判断与「OptionTypeInfo 仍可按 EnumTypeInfo 使用」的兼容要求都会退化，排除。
+
+`open` 的附带影响：
+
+- `EnumTypeInfo` 是 `sealed abstract class TypeInfo` 的子类，按仓颉规则，被 `open` 修饰的子类可在包外被继承，即本特性对外开放了一个派生点。
+- 包外派生的可行性受限：`EnumTypeInfo` 的 `init(cp: CPointer<Unit>)` 使用默认访问级别（本包及子包可见），包外派生需要能调用父类构造器，因此包外派生在实践中不可行；该约定建议在评审中显式确认。
+- 一旦声明为 `open`，`EnumTypeInfo` 的公开成员即构成对外继承契约，后续成员改名、改签名或语义调整不再属于纯内部变更，需按兼容性策略评估。
 
 公开 API：
 
@@ -202,6 +227,12 @@ public func getValue(instance: Any): Option<Any>
 - `getValue(Some(v))` 通过已有 Enum 关联值读取能力返回 `Option<Any>.Some(v)`，`getValue(None)` 返回 `Option<Any>.None`；若构造器或关联值形状异常，抛出 `ReflectException`。
 
 ### 涉及源文件变更
+
+`stdlib/libs/std/reflect/enum_type_info_cjnative.cj`
+
+- 将 `public class EnumTypeInfo <: TypeInfo` 调整为 `public open class EnumTypeInfo <: TypeInfo`，使 `OptionTypeInfo` 具备可继承的基类。
+- 仅新增 `open` 修饰符，不改动 `EnumTypeInfo` 的成员签名、实现、成员访问级别和实例化方式；`TypeInfo` 的 Enum 分类分支仍直接构造普通 `EnumTypeInfo`。
+- 需要同步评估 `open` 带来的对外派生点：包外派生需要可访问的父类构造器，而 `EnumTypeInfo.init(cp: CPointer<Unit>)` 使用包内可见的默认访问级别，包外派生实践上不可行，该限制建议在文档中作为约定声明。
 
 `stdlib/libs/std/reflect/type_info_cjnative.cj`
 
@@ -274,6 +305,7 @@ runtime：
 - `OptionTypeInfo` 独立于 `option_type_info_cjnative.cj`，避免把特化逻辑堆在 TypeInfo 主文件。
 - `TypeInfo` 仅负责取得 Enum TypeInfo、执行标准库侧识别并创建具体 TypeInfo 子类。
 - `OptionTypeInfo` 继承 `EnumTypeInfo`，复用现有 Enum 类型参数、构造器和关联值能力。
+- `EnumTypeInfo` 声明为 `open` 后，其公开成员构成对外继承契约，成员签名变更需按兼容性策略评估；`OptionTypeInfo` 只依赖其公开 API，不增加基类内部耦合。
 
 ### 可测试性
 
@@ -294,6 +326,7 @@ runtime：
 ### 兼容性
 
 - 新增 API 为增量能力。
+- `EnumTypeInfo` 由 `public class` 调整为 `public open class`：既有代码、类型判断和实例化行为不变，仅新增可继承性；包外派生受父类构造器包内可见限制，实践上仍不可行。
 - `OptionTypeInfo <: EnumTypeInfo` 保持旧 Enum 使用方式可继续工作。
 - runtime 无需新增 Option 标识或 ABI；不识别的 Enum 继续按既有 `EnumTypeInfo` 处理。
 
@@ -343,6 +376,7 @@ runtime：
 | `reflect_option_get_value` | 构造 Some(1) 和 None | 调用 `getValue` | Some(1) 返回 `Option<Any>.Some(1)`，None 返回 `Option<Any>.None` |
 | `reflect_non_option_enum` | 获取具有其他限定名或构造器形状的 Enum | 调用 `TypeInfo.of` | 返回普通 EnumTypeInfo，不误判为 OptionTypeInfo |
 | `reflect_option_classification` | 调用 `TypeInfo.of<Option<Int64>>()` | 使用类型匹配判断实际子类 | 返回 OptionTypeInfo |
+| `reflect_enum_type_info_open` | 已启用通用 Enum 反射 | 分别获取普通 Enum 与 `Option<Int64>` 的 TypeInfo，断言与 `EnumTypeInfo` 的关系 | `OptionTypeInfo` 可赋值给 `EnumTypeInfo`；普通 Enum 仍返回 `EnumTypeInfo` 且可正常实例化 |
 
 ## 8、结论
 
@@ -362,6 +396,7 @@ runtime：
 | 问题 | 责任人 | 预计闭环时间 |
 |---|---|---|
 | Option 限定名和 `Some`/`None` 构造器形状是否作为稳定标准库约定 | 标准库反射责任人 | MR 合入前确认 |
+| `EnumTypeInfo` 由 `public class` 调整为 `public open class`（对外开放继承点、公开成员成为继承契约）是否可接受，以及是否显式声明「仅包内可派生」 | 标准库反射责任人 | MR 合入前确认 |
 | 现有 Enum TypeInfo 是否完整提供类型参数、构造器和关联值读取/构造能力 | 标准库与 runtime 责任人 | DT 开发前确认 |
 | 新增 API 文档与中英文文档是否同步 | 标准库文档责任人 | MR 合入前完成 |
 
@@ -373,6 +408,7 @@ runtime：
 - Option 元信息：`Option<Int64>`、`Option<String>`、嵌套 `Option<Option<T>>`。
 - Option 动态行为：Some 构造、None 构造、`isSome`/`isNone`、`getValue`。
 - 兼容行为：`OptionTypeInfo` 仍可作为 `EnumTypeInfo` 使用。
+- 兼容行为：`EnumTypeInfo` 由 `public class` 调整为 `public open class` 后，普通 Enum 仍返回 `EnumTypeInfo` 且可正常实例化，既有 `EnumTypeInfo` API 行为不变。
 - 异常行为：错误类型调用 `OptionTypeInfo.of` 时异常类型和错误信息正确。
 
 ## 附录二、评审范围判断
