@@ -1,34 +1,57 @@
-# Response File 特性设计
+# 解决命令行超长参数导致 cjc 进程无法启动方案设计
 
 - CJEEP-0009
 - Author(s) jinbohang  liujiajie wangyang
 - Statuss: Reviewing
-- IMplementation: https://gitcode.com/Cangjie/cangjie_compiler/pull/2161
+- Implementation: https://gitcode.com/Cangjie/cangjie_compiler/pull/2161
 
 # **1、特性需求/问题/动机的来源与价值**
 
 ## 1.1 背景与目标
 
-之前一线同事反馈当cjpm编译大型项目（包结构复杂，嵌套层级过多）会出现编译失败的问题：
+该问题来源于终端，之前一线同事反馈当 cjpm 编译大型项目（包结构复杂，嵌套层级过多）会出现编译失败的问题：
 
+```text
+C:\rsp_e2e\ws_multigkg_demo
+├── cjpm.toml                 # workspace，共 356 个成员
+├── pkg_dep_module_0001/      # 静态库包，仅 1 个 lib.cj（单函数）
+├── pkg_dep_module_0002/
+├── ...                       # 共 355 个静态库包
+├── pkg_dep_module_0355/
+└── app/                      # 可执行包，import 并链接全部 355 个包
+```
+编译命令为：
 ``` cmd
 cjpm build --jobs 8 -V
 Compiling package `pkg_dep_module_0370`: cjc.exe -p C:\rsp_e2e\ws_deepchain_demo\pkg_dep_module_0370\src --import-path=C:\rsp_e2e\ws_deepchain_demo\target\release --no-sub-pkg --output-dir=C:\rsp_e2e\ws_deepchain_demo\target\release\pkg_dep_module_0370\ --output-type=staticlib -o=libpkg_dep_module_0370.a
 Compiling package `pkg_dep_module_0369`: cjc.exe -p C:\rsp_e2e\ws_deepchain_demo\pkg_dep_module_0369\src --import-path=C:\rsp_e2e\ws_deepchain_demo\target\release --no-sub-pkg --output-dir=C:\rsp_e2e\ws_deepchain_demo\target\release\pkg_dep_module_0369\ --output-type=staticlib -o=libpkg_dep_module_0369.a
-xx 
+
+....  省略了编译其他包的过程
+
+
  cjc.exe -p C:\rsp_e2e\ws_deepchain_demo\app\src --import-path=C:\rsp_e2e\ws_deepchain_demo\target\release --no-sub-pkg --output-dir=C:\rsp_e2e\ws_deepchain_demo\target\release\bin\ -L C:\rsp_e2e\ws_deepchain_demo\target\release\pkg_dep_module_0001\ -lpkg_dep_module_0001 -L C:\rsp_e2e\ws_deepchain_demo\target\release\pkg_dep_module_0002\ 
  3 -L C:\rsp_e2e\ws_deepchain_demo\target\release\pkg_dep_module_0354\ -lpkg_dep_module_0354 -L C:\rsp_e2e\ws_deepchain_demo\target\release\pkg_dep_module_0355\ -lpkg_dep_module_0355 -L C:\rsp_e2e\ws_deepchain_demo\target\release\pkg_dep_module_0356\ -lpkg_dep_module_0356 -L
  --output-type=exe -o=app.exe
 Created process failed, errMessage: "The filename or extension is too long.
 ".
+报错信息提示：
 Error: failed to compile package `app` with exception occurred
    Finished `build` profile compilation
    Executable files at `C:\rsp_e2e\ws_deepchain_demo\target\release\bin`
 ...
 
-le_0061" "-lpkg_dep_module_0060" "-lpkg_dep_module_0059" "-lpkg_dep_module_0030" "-lpkg_dep_module_0029" "-lpkg_dep_module_0028" "-lpkg_dep_module_0027" "-lpkg_dep_module_0002" "-lpkg_dep_module_0001" "--start-group" "-l:libcangjie-std-core.a" "--end-group" "-l:libcangjie-runtime.dll" "-lclang_rt-builtins" "-lboundscheck" "-lm" "-lmsvcrt" "-lmingw32" "-lmoldname" "-lmingwex" "-lmingw32" "-lmsvcrt" "-lpthread" "-ladvapi32" "-lshell32" "-luser32" "-lkernel32" "-lmingw32" "-lmoldname" "-lmingwex" "-lmsvcrt" "C:\\hlt\\cangjie\\third_party\\mingw\\lib\\crtend.o" ": command failed (The parameter is incorrect.)
 Error: failed to compile package `app`, return code is 1
 Error: cjpm build failed
+```
+通过查看上述内容发现， 编译的基本过程是将不同的包先编译成静态库，再编译成一个可执行程序。cjc 仅处理当前编译单元（当前包），不感知工程内其他包的依赖，包间依赖由 cjpm 等构建工具管理。因此，最终链接可执行程序时，构建工具必须把每个依赖包的库搜索路径（`-L`）和库名（`-l`）逐个显式传给 cjc，`-L`/`-l` 的数量随依赖包数量线性增长。当包结构复杂、依赖数量多时，命令行参数就会非常长：
+```
+-L C:\rsp_e2e\ws_deepchain_demo\target\release\pkg_dep_module_0001\ -lpkg_dep_module_0001 -L C:\rsp_e2e\ws_deepchain_demo\target\release\pkg_dep_module_0002\ 
+-L C:\rsp_e2e\ws_deepchain_demo\target\release\pkg_dep_module_0354\ -lpkg_dep_module_0354 
+-L C:\rsp_e2e\ws_deepchain_demo\target\release\pkg_dep_module_0355\ -lpkg_dep_module_0355 
+-L C:\rsp_e2e\ws_deepchain_demo\target\release\pkg_dep_module_0356\ -lpkg_dep_module_0356
+...
+
+
 ```
 
 **根因**:Windows `CreateProcessA` 命令行字符串长度上限为 32767 字符(https://learn.microsoft.com/zh-cn/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessa)，（cmd 命令行中为 8191）一旦 `cjc` 收到的参数总长超过该值,操作系统直接拒绝启动进程。Linux/macOS 虽有 `ARG_MAX`(典型 2 MB)限制,常规工程不易触发,但 Windows 大工程(尤其是链接阶段参数多）容易遇到该限制。
@@ -36,15 +59,12 @@ Error: cjpm build failed
 ### 1.1.1 目标
 
 
-为绕开上述系统命令行长度限制,本特性为 `cjc` 提供一种"从文件读取命令行参数"的能力。出现该问题一定是因为涉及编译大型项目，输入了太多的自定义的内容，例如链接的路径、链接所需要的库（包括静态库、动态库、bc文件），涉及太多的中间产物。因此，我们更加倾向将该文件看作是编译过程的中间产物，而非需要开发者过度关注。例如这个文件中的内容可以为下列所示，其中含有了编译参数：
-```
---import-path=C:\rsp_e2e\ws_deepchain_demo\target\release --no-sub-pkg --output-dir=C:\rsp_e2e\ws_deepchain_demo\target\release\bin\ 
--L C:\rsp_e2e\ws_deepchain_demo\target\release\pkg_dep_module_0001\ -lpkg_dep_module_0001 -L C:\rsp_e2e\ws_deepchain_demo\target\release\pkg_dep_module_0002\ 
--L C:\rsp_e2e\ws_deepchain_demo\target\release\pkg_dep_module_0354\ -lpkg_dep_module_0354 
--L C:\rsp_e2e\ws_deepchain_demo\target\release\pkg_dep_module_0355\ -lpkg_dep_module_0355 
--L C:\rsp_e2e\ws_deepchain_demo\target\release\pkg_dep_module_0356\ -lpkg_dep_module_0356 -L
-```
-之后可以将其传递给cjc， 例如：
+为绕开上述系统命令行长度限制,本特性为 `cjc` 提供一种"从文件读取命令行参数"的能力。
+
+**术语**:该文件即业界通称的 **response file(响应文件)**,常取扩展名 `.rsp`(故简称 rsp 文件)——一份纯文本参数清单,由工具自己读取并展开,以绕开 shell/OS 的命令行长度限制。
+https://gcc.gnu.org/wiki/Response_Files 
+
+出现该问题一定是因为涉及编译大型项目，输入了太多的自定义的内容，例如链接的路径、链接所需要的库（包括静态库、动态库、bc文件），涉及太多的中间产物。因此，我们更加倾向将该文件看作是编译过程的中间产物，而非需要开发者过度关注。例如这个文件中的内容可以为上述背景中提到的命令行参数所示。之后可以将其传递给cjc， 例如：
 
 ```text
 cjc  @options.rsp -O2
@@ -58,22 +78,21 @@ rsp：    -Lthird-party/lib
          src/main.cj
 结果：   cjc -O0 -Lthird-party/lib src/main.cj -O2
 ```
-**术语**:该文件即业界通称的 **response file(响应文件)**,常取扩展名 `.rsp`(故简称 rsp 文件)——一份纯文本参数清单,由工具自己读取并展开,以绕开 shell/OS 的命令行长度限制。
-https://gcc.gnu.org/wiki/Response_Files 
+
 
 
 
 ## 1.2 适用场景
 - Windows 命令行长度上限 32767 字符,进程可能启动失败;
-- 大型工程中源文件、依赖库、链接输入或编译选项数量过多,由构建系统/包管理工具自动生成 rsp;
+- 大型工程中源文件、依赖库、链接输入或编译选项数量过多,由构建系统/包管理工具自动生成 rsp文件;
 
-本特性只影响 driver 读取命令行选项的阶段:rsp 展开发生在选项解析之前,展开后行为与参数直写命令行完全一致,不改动编译、链接等后续 pipeline。
-
-
+本方案首次引入了rsp文件， 只影响 driver 读取命令行选项的阶段:rsp 展开发生在选项解析之前,展开后行为与参数直写命令行完全一致,不改动编译、链接等后续 pipeline。
 
 
 
-# **2、业界竞品分析**
+
+
+# **2、业界竞品分析（是否支持rsp文件）**
 
 ## 2.1 业界产品支持情况
 目前调研了下列工具，c++, rust，go,swift, kotlin,java, c#/vb都支持response file机制，均支持 @xx.file 作为response file, 而像是解释类型的语言一般并不支持。
@@ -155,14 +174,15 @@ https://gcc.gnu.org/wiki/Response_Files
 
 ## 3.1 选项定位与设计定位
 
-cjc 新增编参数文件 `@<file>`:以 `@` 开头、后跟 rsp 文件路径构成一个命令行参数,如 `@build/options.rsp`,用于在编译时从文件中读取编译参数。cjc 读取 `<file>` 中的参数序列,**就地替换**该 `@<file>` 参数;替换后 cjc 的行为,与用户把这些参数手工写在命令行该位置**完全等价**。另外，该文件目前想仅支持UTF-8编码。
-> 但是这里会引入一个兼容性问题 ，就是之前可以编译的@file.cj 此时会被识别成参数文件，但是考虑到这种场景并不常见， 因此想沿用业界普遍用法以@标识rsp文件。
+cjc 新增编参数文件 `@<file>`:以 `@` 开头、后跟 rsp 文件路径构成一个命令行参数,如 `@build/options.rsp`,用于在编译时从文件中读取编译参数。cjc 读取 `<file>` 中的参数序列,**就地替换**该 `@<file>` 参数;替换后 cjc 的行为,与用户把这些参数手工写在命令行该位置**完全等价**。
+
+`@` 标识与现有 `@file.cj` 输入文件写法冲突。该场景少见，且 `@` 为业界通用标识，推荐沿用 `@`。
 
 
 本特性首先解决“大型工程中无法用普通命令行启动 cjc”的问题。
 
 ```text
-cjpm / CMake
+cjpm
     └─ 根据完整 argv 生成 rsp
          └─ cjc 读取 rsp 并恢复 argv
               └─ 进入既有选项解析和编译流程
@@ -176,11 +196,12 @@ cjpm / CMake
 
 ## 3.2 rsp文件规则
 
-参照第二章业界情况，类似于rust一行一参数的情况兼容性不好，可以参考go rust都处于演进过程 ，特别是go 已经取消了一行一参数的设计；而为了方便windows 用户不想使用gcc 这种全平台一致的方式，目前想参考 swift实现或者参考kotlin方式该文件目前仅支持 UTF-8编码（当前主流编码）。
+参照第二章业界情况：rust 的一行一参数格式兼容性不好，go 已经取消该设计。GCC 类规则会消费无引号反斜杠，Windows 路径不能直接书写。因此候选字符规则有两个：方案一（参考 Swift 实现，分平台，见 3.2.1）和方案二（参考 Kotlin 方式，平台统一，见 3.2.2）。该文件仅支持 UTF-8 编码（当前主流编码）。
 
 详细字符规则、示例和逐项比较见附录 A0。
 ### 3.2.1 分平台
-参考Swift做法，使用 mac/linux 使用llvm GNU, window使用CRT规则。举个例子：
+参考Swift做法，使用 mac/linux 使用llvm GNU, window使用CRT规则。 
+举个例子：
 | rsp 内容 | macOS/Linux(LLVM GNU) | Windows(CRT) |
 | --- | --- | --- |
 | `-L"third party/lib"` | `-Lthird party/lib` | `-Lthird party/lib` |
@@ -203,10 +224,22 @@ cjpm / CMake
 | `# comment` | `#`、`comment`(不是注释) |
 | `pre"a b "post` | `prea b post`(一个参数,末尾空格保留) |
 
+### 3.2.3 两方案边界能力对比
+
+两个方案的共同边界：不解析注释，不执行变量、glob 展开；主要差异如下：
+
+| 边界能力 | 方案一（分平台） | 方案二（平台统一） |
+| --- | --- | --- |
+| 空参数 `""` / `''` | Linux/macOS 不支持（LLVM GNU 丢弃空串）；Windows CRT 规则支持 | 全平台不支持（沿用 LLVM GNU 语义） |
+| Windows 路径直接书写 | 仅 Windows 可直接书写；Linux/macOS 上反斜杠（含引号内）一律转义，需双写 `\\` 或改用正斜杠 | 全平台可直接书写（无引号反斜杠字面保留） |
+| `a\ b` 转义空格 | Linux/macOS 支持（解析为一个参数）；Windows 切为两个参数 | 全平台不支持，切成 `a\`、`b` 两个参数；含空格参数必须加引号 |
+| 单引号 `'...'` | Linux/macOS 参与分组；Windows 为普通字符 | 全平台参与分组 |
+| 同一 rsp 文件跨平台复用 | 语义不一致，构建工具需按平台生成不同的 rsp | 语义一致，一份 rsp 可在所有平台使用 |
+
 
 ## 3.3 报错信息提示
 
-虽然目前对于该文件的定位倾向于编译阶段的中间产物， 但是依然会面向用户，因此目前想保留以下必要报错；
+虽然目前对于该文件的定位倾向于编译阶段的中间产物，但是依然会面向用户，因此保留以下报错。
 
 | # | 触发条件  | 如何处理|
 | --- | --- | ---|
@@ -217,17 +250,29 @@ cjpm / CMake
 
 # **4、结论**
 
-## 4.1 评审结论
+## 4.1 评审决策项
+
+以下决策项需本次评审逐项确认。正文以"决策项 N"引用本表。
+
+| # | 决策项 | 备选 | 评审结论 |
+| --- | --- | --- | --- |
+| 1 | 是否引入 rsp 文件机制 | - | 待评审 |
+| 2 | rsp 文件的标识方式 | `@<file>` | 待评审 |
+| 3 | `@<file>` 指向的文件不存在时 | (a) 不报错，参数原样传递，作为输入文件处理（clang、swift 行为）；(b) 直接报错（rust 行为） | 待评审 |
+| 4 | rsp 字符规则 | 方案一：分平台（参考 Swift，见 3.2.1）；方案二：平台统一（参考 Kotlin，见 3.2.2）；边界对比见 3.2.3 | 待评审 |
+| 5 | 文件编码 | 仅 UTF-8  | 待评审 |
+
+## 4.2 评审结论
 
 (待评审后填写:通过 / 不通过 + 达成一致的主要观点。)
 
-## 4.2 遗留问题
+## 4.3 遗留问题
 
 
 
 
 # **附录 A0:章节3的方案细节**
-## A0.1 3.3.1 分平台
+## A0.1 3.2.1 分平台
 
 本方案mac , linux直接采用 LLVM/GNU，不增加 cjc 私有字符规则。
 | 元素 | 规则 |
@@ -260,7 +305,7 @@ windows 采取如下规则：
 | `#`、`$`、glob | 普通字符，不执行注释或展开 | `#` → 普通参数 |
 
 
-## A0.2： 3.3.2 跨平台 （kotlin）
+## A0.2： 3.2.2 平台统一方法 （kotlin）
 
 本方案以 LLVM GNU 为基线，仅修改**无引号反斜杠**的处理：LLVM GNU 中无引号 `\X` 会消费反斜杠并保留 `X`；本方案改为原样保留 `\X`。其他空白分隔、单双引号、引号拼接等规则保持 LLVM GNU 语义。
 
@@ -330,13 +375,13 @@ cjc @build/debug.rsp src/main.cj
 
 注:展开过程中嵌套的 `@common.rsp`、`@sub/deps.rsp` 虽然形式上出现在了参数序列里,解析基准仍以"父 rsp 所在目录"为准(见上表),不随展开位置变成 cwd。
 
-# **附录 A1：方案二的辅助词法模型（自定义的rsp文件格式）**
+# **附录 A1：方案二的辅助词法模型**
 
-> **定位**：方案一的规范来源是附录 A0.1。本附录只描述“LLVM GNU tokenizer + 无引号反斜杠字面化”的实现结构，不另行定义一套 bash 语法。LLVM GNU 的边界行为以项目实际采用版本的 `llvm::cl::TokenizeGNUCommandLine` 为准。
+> **定位**：方案二的规范来源是附录 A0.1。本附录只描述“LLVM GNU tokenizer + 无引号反斜杠字面化”的实现结构，不另行定义一套 bash 语法。LLVM GNU 的边界行为以项目实际采用版本的 `llvm::cl::TokenizeGNUCommandLine` 为准。
 
 ## A1.1 分层模型
 
-方案一分为三层：
+方案二分为三层：
 
 1. 文件层：读取 UTF-8 文本并完成 BOM、CRLF、NUL 和 I/O 校验；
 2. tokenizer 层：按 LLVM GNU 规则切分参数，仅覆盖无引号 `\` 的处理；
