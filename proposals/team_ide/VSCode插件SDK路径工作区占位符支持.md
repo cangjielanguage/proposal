@@ -1,6 +1,6 @@
 # VSCode 插件 SDK 路径工作区占位符支持
 
-* CJEEP ID：CJEEP-0005
+* CJEEP ID：CJEEP-0007
 * Author(s)：candy
 * Status：Reviewing
 * Implementation：UnImplemented
