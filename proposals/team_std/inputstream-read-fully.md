@@ -1,6 +1,6 @@
 # 标准输入短读 API
 
-* CJEEP ID：待分配
+* CJEEP ID：CJEEP-0010
 * Author(s)：HenonBamboo（@HenonBamboo_YYJ）
 * Status：Reviewing
 * Implementation：[runtime !1641](https://atomgit.com/Cangjie/cangjie_runtime/merge_requests/1641)、[docs !617](https://atomgit.com/Cangjie/cangjie_docs/merge_requests/617)、[test !1943](https://atomgit.com/Cangjie/cangjie_test/merge_requests/1943)。配套 PR 按本方案修订实现、文档和回归。
@@ -13,6 +13,161 @@
 
 本方案保留原有 `ConsoleReader.read` 行为，新增允许短读的 `readSome`，由调用方主动选择，满足标准输入的流式读取需求。旧 `read` 在输入结束或读取失败时仍可返回不足长度；使用新方法的调用方按返回计数处理有效前缀，并按协议自行累计数据。
 
+## 1.1、管道请求—应答的最小复现
+
+父进程发送请求并 flush 后保持子进程的 stdin 打开，等待子进程返回响应；子进程先读取 stdin，再发送响应。当读取条件尚未满足时，双方会等待对方先行动：
+
+```text
+父进程：发送请求 → 等待 ACK → 才发送下一条请求
+子进程：等待换行或填满数组 → 才发送 ACK
+```
+
+下面用两个独立用例区分等待条件，目标数组均为 8 字节：
+
+| 用例 | 父进程首次发送 | 旧 read 尚未满足的条件 | readSome 的预期行为 |
+| --- | --- | --- | --- |
+| line | `abcdefgh`（8 字节，无换行） | 底层按行读取仍需换行或 EOF，即使已有 8 字节也可能等待 | 允许返回已取得的字节，不要求换行 |
+| fill | `abc\n`（4 字节，有换行） | 上层继续尝试填满数组，等待下一行或 EOF | 允许返回不足 8 字节的数据 |
+
+保存以下子进程为 `stdin_request.cj`。它只在启动时读取一次环境变量，以便用同一个可执行文件比较两种接口；`ACK` 中打印实际计数和有效字节，避免依赖字符串解码或完整消息边界。
+
+```cangjie
+import std.env.getStdIn
+import std.env.getVariable
+
+main() {
+    let useShortRead = getVariable("CJEEP0010_MODE") == Some("some")
+    let buffer = Array<Byte>(8, repeat: 0)
+    print("READY\n", flush: true)
+    let count = if (useShortRead) {
+        getStdIn().readSome(buffer)
+    } else {
+        getStdIn().read(buffer)
+    }
+    print("ACK:${count}:${buffer[..count]}\n", flush: true)
+}
+```
+
+保存以下父进程为 `check_request.py`，使用 Python 3 运行。它在收到 `READY` 后才发送请求，观察旧接口 1 秒内是否没有响应且进程仍存活，再补充满足读取条件的数据，确认子进程能够继续执行。新接口必须在写端仍打开时响应。每条路径均检查响应字节、子进程退出码，并在异常时终止、回收子进程。
+
+```python
+import ast
+import os
+from pathlib import Path
+import queue
+import subprocess
+import sys
+import threading
+
+
+def collect_lines(stream, events):
+    try:
+        for line in iter(stream.readline, b""):
+            events.put(line)
+    finally:
+        events.put(None)
+
+
+def receive(events, timeout=5):
+    line = events.get(timeout=timeout)
+    if line is None:
+        raise AssertionError("child stdout closed before ACK")
+    return line.rstrip(b"\r\n")
+
+
+def check(binary, mode, label, payload, release):
+    env = dict(os.environ, CJEEP0010_MODE=mode)
+    child = subprocess.Popen(
+        [binary], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, env=env,
+    )
+    events = queue.Queue()
+    errors = []
+    reader = threading.Thread(target=collect_lines,
+                              args=(child.stdout, events), daemon=True)
+    error_reader = threading.Thread(
+        target=lambda: errors.append(child.stderr.read()), daemon=True)
+    reader.start()
+    error_reader.start()
+    try:
+        if receive(events) != b"READY":
+            raise AssertionError("missing READY handshake")
+        child.stdin.write(payload)
+        child.stdin.flush()
+        if mode == "read":
+            try:
+                unexpected = receive(events, timeout=1)
+            except queue.Empty:
+                if child.poll() is not None:
+                    raise AssertionError("child exited during observation")
+            else:
+                raise AssertionError(f"unexpected early response: {unexpected!r}")
+            print(f"{mode}/{label}: no ACK in 1s; writer open", flush=True)
+            child.stdin.write(release)
+            child.stdin.flush()
+        ack = receive(events)
+        tag, count_text, data_text = ack.decode("ascii").split(":", 2)
+        count = int(count_text)
+        data = bytes(ast.literal_eval(data_text))
+        if tag != "ACK" or count != len(data):
+            raise AssertionError(f"invalid response: {ack!r}")
+        if mode == "read":
+            if count != 8 or data != (payload + release)[:8]:
+                raise AssertionError(f"legacy read mismatch: {ack!r}")
+        elif not (0 < count <= min(8, len(payload)) and data == payload[:count]):
+            raise AssertionError(f"short read mismatch: {ack!r}")
+        # Keep stdin open even while waiting for the child to exit.
+        if child.wait(timeout=5) != 0:
+            raise AssertionError("child returned a nonzero exit code")
+        reader.join(timeout=5)
+        error_reader.join(timeout=5)
+        if reader.is_alive() or error_reader.is_alive():
+            raise AssertionError("output collection did not finish")
+        if errors != [b""] or events.get_nowait() is not None or not events.empty():
+            raise AssertionError(f"unexpected additional output: {errors!r}")
+        print(f"{mode}/{label}: {ack.decode('ascii')}; writer open", flush=True)
+    finally:
+        if child.poll() is None:
+            child.kill()
+        child.wait(timeout=5)
+        reader.join(timeout=5)
+        error_reader.join(timeout=5)
+        child.stdin.close()
+        child.stdout.close()
+        child.stderr.close()
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2:
+        raise SystemExit("usage: python check_request.py <stdin_request executable>")
+    executable = str(Path(sys.argv[1]).resolve(strict=True))
+    for name, request, continuation in [
+        ("line", b"abcdefgh", b"\n"),
+        ("fill", b"abc\n", b"def\n"),
+    ]:
+        for method in ("read", "some"):
+            check(executable, method, name, request, continuation)
+    print("PASS: 4 pipe cases")
+```
+
+在包含本提案实现的 SDK 环境中编译运行（未包含 `readSome` 的发行版 SDK 不能直接编译此示例）。编译器、模块搜索路径和动态库加载路径必须指向同一套 SDK；`--dy-std` 用于本次动态标准库验证。
+
+Windows PowerShell：
+
+```powershell
+cjc stdin_request.cj --dy-std -o stdin_request.exe
+python check_request.py ./stdin_request.exe
+```
+
+Linux：
+
+```sh
+cjc stdin_request.cj --dy-std -o stdin_request
+python3 check_request.py ./stdin_request
+```
+
+不能用会主动关闭 stdin 的一次性输入代替此驱动，例如 `subprocess.run(input=...)`：EOF 会解除旧读取的等待，不能复现持续连接上的请求—应答关系。1 秒观察窗口不是对线程调度或永久死锁的证明；`READY`、存活检查、补充输入后恢复及源码中的读取条件共同说明等待原因。上述示例已实际编译运行，4 个管道用例通过。
+
 # 2、特性影响分析
 
 - 涉及模块：`std.env`、`std.core` 原生输入层，以及 `std.io.InputStream.read` 契约说明、配套文档和测试。
@@ -20,6 +175,27 @@
 - 行为兼容：保留 `ConsoleReader.read` 的签名和原有按行取数、尝试填满行为，不废弃旧接口。短读由新方法 `readSome` 提供，现有调用方不因新增能力而自动切换读取语义。
 - API/ABI：仅新增 `ConsoleReader.readSome`；`InputStream` 保持原有成员结构。保持接口结构不等于整项变更已获得二进制兼容性证明；新增类成员、原生实现及预编译依赖仍需完成兼容性检查。
 - 性能：原生层增加固定 512 字节共享缓存，已有缓存时直接复制可用数据，不继续等待填满调用方数组。
+
+## 2.1、其他 I/O 接口的等待条件与本提案边界
+
+双方互等并非 `ConsoleReader` 独有。是否发生互等取决于读取操作的返回条件与对端协议的发送条件：一端等待换行、更多字节或 EOF，另一端等待响应后才继续发送，就可能形成循环等待。阻塞读取本身不等于实现缺陷。
+
+以下依据当前实现分析其他 I/O 接口的等待条件。路径均相对于运行时仓库的 `stdlib/libs/std/`。
+
+| 接口/场景 | 源码中的返回条件 | 对请求—应答的影响 | 定位 |
+| --- | --- | --- | --- |
+| `ConsoleReader.read` | 按行获取输入并尝试填满数组，输入结束或行读取失败时可返回不足长度 | 换行条件和填充条件均可能与对端等待响应形成互等 | `env/console_reader.cj`：`read`、`readFromConsole` |
+| `BufferedInputStream.read` | 自身通过循环尝试填满数组；缓冲区耗尽时再次调用底层 `read` | 即使底层允许短读，包装层也可能继续等待更多数据 | `io/buffered_input_stream.cj`：`read`、`fillInBuf` |
+| `TcpSocket.read` | 取得一批数据即可返回；无数据时等待，可受读取超时控制 | 没有上述按行和填充循环，但双方都先读、或调用方自行累计固定长度时仍可能互等 | `net/tcp.cj`：`read`；`net/socket_ffi_cjnative_impl.cj`：`readImpl`、`readSlowpath` |
+| 子进程 stdout/stderr 管道的 `read` | 包装层转发，管道层单次底层读取，允许短读；无数据时可等待 | 不要求收到换行或填满数组，但不能替代协议的发送顺序设计 | `process/process_stream.cj`：`ProcessInputStream.read`、`PipeInputStream.read`；`process/native/process_ffi_{unix,win}.c` |
+| `StringReader.readln/readUntil/readToEnd` | 分别读取到行结束、谓词满足或流结束，仍受底层流约束 | 对端等待响应而不提供相应结束条件时，可能互等；这是接口语义与协议不匹配 | `io/string_reader.cj`：对应方法及 `readUntilToString` |
+| `SubProcess.waitOutput()` | 收集 stdout/stderr 到结束并等待子进程退出 | 子进程等待下一条请求而父进程等待完整输出时，可能互等 | `process/sub_process.cj`：`subProcessWaitOutput`；`process/process_utils.cj`：`readToByteBuffer` |
+| 普通文件 `File.read` | 仓颉层调用底层读取；Unix 单次 `read`，Windows 大读取分块、短读即停止 | 普通文件通常不涉及对端等待响应；此结论不推广到 FIFO、设备等输入源 | `fs/file.cj`：`read`、`directRead`；`fs/native/file_system_{unix,win}.c`：`CJ_FS_FileRead` |
+| `ByteBuffer.read` | 从已有内存数据复制不超过目标容量的字节，数据为空时返回 0 | 不等待外部生产者 | `io/byte_buffer.cj`：`read` |
+
+尤其需要注意：`BufferedInputStream(getStdIn())` 调用的仍是旧 `read`，不会自动选用 `readSome`；即使编写适配器将底层 `read` 转发给 `readSome`，外层 `BufferedInputStream.read` 的填充循环仍可能继续读取并等待。`InputStream.read` 的通用契约允许具体实现选择短读或尝试填满，不能据此推导所有包装层都会短读返回。
+
+本次仅为 `ConsoleReader` 增加可主动选择的短读入口，不改变其他既有 I/O 接口。`readSome` 不保证无数据时立即返回，不保证单次取得完整消息，也不保证终端逐键返回；调用方仍需处理实际计数、消息边界和请求—应答顺序。若后续希望扩展缓冲流等接口，应单独评估其契约与兼容性，不在本提案中隐式修改。
 
 # 3、业界竞品分析
 
@@ -73,7 +249,7 @@ public func readSome(arr: Array<Byte>): Int64
 | 短读边界 | 空数组、切片、二进制输入 | 调用 readSome 并检查返回计数和目标数组 | 空数组返回 0，切片外及未写入部分保持不变，独立字节读取保留原始数据 |
 | 平台与 ABI | Windows、POSIX 及预编译依赖 | 验证终端、管道、文件、CRLF、缓存边界及兼容性探针 | 明确各平台与二进制兼容性覆盖范围 |
 
-本轮在 Windows x64 1.1.3、Linux x64 1.2.0 的任务私有 SDK 中重新编译了最终 `std.io` 和 `std.env`，标准输入兼容回归均通过，覆盖旧 `read` 等待与 EOF、新 `readSome` 短读、二进制输入、切片、新旧混读、Windows 文本转换及缓存边界；Linux POSIX PTY 检查通过。两平台的负向编译确认已撤除的接口不可调用，旧 `read` 可执行文件在原 SDK 和本轮私有库下输出一致；Linux 旧接口实现库与新 `ConsoleReader` 分派探针通过。本轮文档仅移除不再提议的接口及示例，保留的可执行示例未改动。以上为专项验证，不代表源版本 1.3 的完整 SDK 构建、正式 ABI 检查或全部 CI 门禁通过；Windows 真实交互终端本轮未验证。
+此前在 Windows x64 1.1.3、Linux x64 1.2.0 的任务私有 SDK 中重新编译了最终 `std.io` 和 `std.env`，标准输入兼容回归均通过，覆盖旧 `read` 等待与 EOF、新 `readSome` 短读、二进制输入、切片、新旧混读、Windows 文本转换及缓存边界；Linux POSIX PTY 检查通过。两平台的负向编译确认已撤除的接口不可调用，旧 `read` 可执行文件在原 SDK 和对应私有库下输出一致；Linux 旧接口实现库与新 `ConsoleReader` 分派探针通过。以上为专项验证，不代表源版本 1.3 的完整 SDK 构建、正式 ABI 检查或全部 CI 门禁通过；Windows 真实交互终端未验证。
 
 # 8、结论
 
