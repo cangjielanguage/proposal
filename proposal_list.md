@@ -1,5 +1,5 @@
-* 仓颉编程语言架构会议链接：[Link](https://meeting.huaweicloud.com/welink/webrtc/?lang=zh-CN#/j/97470377/0mLv2J7J9OMYPO30Ly1xdtXybfN9evzHC)
-* 会议密码：458353
+* 仓颉编程语言架构会议链接：[Link](https://app.huawei.com/wmeeting/join/96944831/9LSeRjxkQ6SrHzY2MURCSYbwO62zOUgWh)
+* 会议密码：560228
 * 时间：一般每周四的下午14:15开始，实际情况看列表中议题时间
 
 | Title | CJEEP Number | Author(s) | Corresponding Team | (Original) Issue | Status | Schedule Time | (Latest) Proposal | Decisions |
